@@ -97,7 +97,7 @@ cron.schedule(
 );
 
 const port = process.env.PORT || 8787;
-app.listen(port, () => {
+app.listen(port, '0.0.0.0', () => {
   console.log(`Muëcy Ops running on port ${port}`);
   console.log(`Connect Google: ${process.env.APP_BASE_URL || "(set APP_BASE_URL)"}/auth/google`);
 });
