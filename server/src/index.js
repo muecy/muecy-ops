@@ -101,3 +101,6 @@ app.listen(port, '0.0.0.0', () => {
   console.log(`Muëcy Ops running on port ${port}`);
   console.log(`Connect Google: ${process.env.APP_BASE_URL || "(set APP_BASE_URL)"}/auth/google`);
 });
+import { startBot } from "./bot.js";
+
+startBot({ userId: 1 });
