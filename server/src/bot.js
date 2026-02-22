@@ -112,7 +112,7 @@ function addMinutesToLocal(local, minutes) {
   return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`; // 👈 backtick cerrado
 }
 
-export function startBot({ userId }) {
+function startBot({ userId }) {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
@@ -253,3 +253,4 @@ if (cmd.type === "done") {
 
   return bot;
 }
+module.exports = { startBot };
