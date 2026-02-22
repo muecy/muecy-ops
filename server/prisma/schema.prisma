@@ -38,3 +38,21 @@ model Task {
   @@index([userId, dueAt])
   @@unique([userId, source, externalId])
 }
+model Task {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  assignee  String?
+  priority  Int      @default(2)
+  status    String   @default("PENDING")
+  source    String   @default("manual")
+  createdAt DateTime @default(now())
+
+  // ✅ NUEVO: vínculo con evento de Google
+  dueAt           DateTime?
+  googleEventId   String?
+  googleEventLink String?
+  eventTimeZone   String?
+  eventStartLocal String?
+  eventEndLocal   String?
+}
