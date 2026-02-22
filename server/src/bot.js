@@ -253,4 +253,3 @@ if (cmd.type === "done") {
 
   return bot;
 }
- 
