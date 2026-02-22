@@ -138,7 +138,7 @@ const taskRaw = pickField(cleanedRaw, "task");
 
 const cleaned = removeFields(cleanedRaw);
 
-const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean;
+const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean);
 
     const title = parts[0] || "Evento Muëcy Ops";
     const whenText = parts[1] || "";
