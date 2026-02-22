@@ -142,8 +142,9 @@ export function startBot({ userId }) {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text || "";
+  const chatId = msg.chat.id;
+  const text = msg.text || "";
+  const userId = String(msg.from.id);
 
     /* ======================
        EVENT (Google Calendar)
