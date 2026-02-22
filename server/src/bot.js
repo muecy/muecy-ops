@@ -159,15 +159,22 @@ try {
 const calendarId = process.env.GOOGLE_CALENDAR_ID;
 if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
 
-const cleanedRaw = text.replace(/^\s*\/?event\b\s*:?\s*/i, "").trim();
+const raw = text.replace(/^\s*\/?event\b\s*:?\s*/i, "").trim();
 
-const location = pickField(cleanedRaw, "loc");
-const description = pickField(cleanedRaw, "desc");
-const inviteRaw = pickField(cleanedRaw, "invite");
-const taskRaw = pickField(cleanedRaw, "task");
+// Extraer campos opcionales primero
+const location = pickField(raw, "loc");
+const description = pickField(raw, "desc");
+const inviteRaw = pickField(raw, "invite");
+const taskRaw = pickField(raw, "task");
 
-const cleaned = removeFields(cleanedRaw);
-const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
+// Ahora removemos SOLO loc/desc/invite (NO task)
+const cleaned = raw
+.replace(/\bloc\s*:\s*[^/]+/gi, "")
+.replace(/\bdesc\s*:\s*[^/]+/gi, "")
+.replace(/\binvite\s*:\s*[^/]+/gi, "")
+.trim();
+
+const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean);
 
 const title = parts[0] || "Evento Muëcy Ops"
 const whenText = parts[1] || ""
@@ -177,27 +184,21 @@ const { tz, local } = parseWhenToNYLocal(whenText);
 const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
 
 const attendees = parseInviteList(inviteRaw);
-
 const calendar = getCalendarClient();
 
-const requestBody = {
+const result = await calendar.events.insert({
+calendarId,
+requestBody: {
 summary: title,
 start: { dateTime: local, timeZone: tz },
 end: { dateTime: endLocal, timeZone: tz },
 ...(location ? { location } : {}),
 ...(description ? { description } : {}),
 ...(attendees.length ? { attendees } : {}),
-};
-
-const result = await calendar.events.insert({
-calendarId,
-requestBody,
+},
 sendUpdates: attendees.length ? "all" : "none",
 });
 
-const link = result?.data?.htmlLink || ""
-
-// ✅ Crear tarea vinculada si existe task:
 let linkedTask = null;
 
 if (taskRaw) {
@@ -218,7 +219,7 @@ const lines = [
 `🕒 ${local} (${tz})`,
 location ? `📍 ${location}` : null,
 description ? `📝 ${description}` : null,
-link ? `${link}` : null,
+result?.data?.htmlLink || null,
 linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
 ].filter(Boolean);
 
@@ -230,6 +231,7 @@ await bot.sendMessage(chatId, `❌ No pude crear el evento. Detalle: ${e.message
 
 return;
 }
+
 
 /* ======================
 TASK COMMANDS (Prisma)
