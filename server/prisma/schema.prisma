@@ -16,6 +16,8 @@ model User {
   tokenExpiry  DateTime?
   createdAt    DateTime @default(now())
   tasks        Task[]
+  telegramUserId String? @unique
+  telegramChatId String?
 }
 
 model Task {
