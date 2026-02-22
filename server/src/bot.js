@@ -128,6 +128,8 @@ BOT
 ========================= */
 
 export function startBot({ userId }) {
+ console.log("BOT VERSION 2.0 — TASK LINK FIX ACTIVE");
+
 if (!process.env.TELEGRAM_BOT_TOKEN) {
 throw new Error("Missing TELEGRAM_BOT_TOKEN");
 }
