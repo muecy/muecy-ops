@@ -109,14 +109,16 @@ function addMinutesToLocal(local, minutes) {
   const outH = pad2(dt.getHours());
   const outMin = pad2(dt.getMinutes());
 
-  return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`;
+  return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`; // 👈 backtick cerrado
 }
-function startBot({ userId }) {
+
+export function startBot({ userId }) {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text || "";
+
 // ======================
 // EVENT command (Google Calendar)
 // Uso recomendado:
@@ -207,25 +209,35 @@ const result = await calendar.events.insert({
         take: 20
       });
       const lines = ["📌 Pendientes:", ...tasks.map(t => `- [${t.status}] [P${t.priority}] ${t.title}`)];
-      bot.sendMessage(chatId, lines.join("\n"));
+      bot.sendMessage(chatId, lines.join("\n");
       return;
     }
 
-    if (cmd.type === "done") {
-      const q = cmd.payload.toLowerCase();
-      const task = await prisma.task.findFirst({
-        where: { userId, status: { in: ["PENDING", "DOING", "BLOCKED"] }, title: { contains: q, mode: "insensitive" } },
-        orderBy: { createdAt: "asc" }
-      });
-      if (!task) {
-        bot.sendMessage(chatId, `No encontré tarea que coincida con: "${cmd.payload}"`);
-        return;
-      }
-      await prisma.task.update({ where: { id: task.id }, data: { status: "DONE" } });
-      bot.sendMessage(chatId, `✅ Marcada como DONE: ${task.title}`);
-      return;
-    }
+if (cmd.type === "done") {
+  const q = cmd.payload.toLowerCase();
 
+  const task = await prisma.task.findFirst({
+    where: {
+      userId,
+      status: { in: ["PENDING", "DOING", "BLOCKED"] },
+      title: { contains: q, mode: "insensitive" },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (!task) {
+    bot.sendMessage(chatId, `No encontré tarea que coincida con: "${cmd.payload}"`);
+    return;
+  }
+
+  await prisma.task.update({
+    where: { id: task.id },
+    data: { status: "DONE" },
+  });
+
+  bot.sendMessage(chatId, `✅ Marcada como DONE: ${task.title}`);
+  return;
+}
     bot.sendMessage(
       chatId,
       [
@@ -241,5 +253,4 @@ const result = await calendar.events.insert({
 
   return bot;
 }
-  module.exports = { startbot };
-}
+ 
