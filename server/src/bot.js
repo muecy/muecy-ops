@@ -222,24 +222,22 @@ export function startBot() {
 
         // ✅ NUEVO: Si viene task: creamos tarea vinculada
         let linkedTask = null;
-        if (taskRaw) {
-          linkedTask = await prisma.task.create({
-            data: {
-              userId,
-              title: taskRaw,
-              assignee: null,
-              priority: 2,
-              source: "calendar",
-              status: "PENDING",
-              dueAt: nyLocalToDate(local),
-              googleEventId: eventId,
-              googleEventLink: link,
-              eventTimeZone: tz,
-              eventStartLocal: local,
-              eventEndLocal: endLocal,
-            },
-          });
-        }
+
+if (taskRaw) {
+  try {
+    linkedTask = await prisma.task.create({
+      data: {
+        userId: String(msg.from.id),
+        title: taskRaw,
+        priority: 2,
+        status: "PENDING",
+        source: "calendar",
+      },
+    });
+  } catch (err) {
+    console.error("TASK CREATE ERROR:", err);
+  }
+}
 
         const lines = [
           `✅ Evento creado:`,
