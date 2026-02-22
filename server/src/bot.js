@@ -231,16 +231,16 @@ if (cleanedRaw.toLowerCase().includes("task:")) {
         let linkedTask = null;
 
 if (taskRaw) {
-  try {
-    linkedTask = await prisma.task.create({
-      data: {
-        userId: String(msg.from.id),
-        title: taskRaw,
-        priority: 2,
-        status: "PENDING",
-        source: "calendar",
-      },
-    });
+  linkedTask = await prisma.task.create({
+    data: {
+      userId: String(msg.from.id),
+      title: taskRaw,
+      priority: 2,
+      status: "PENDING",
+      source: "calendar",
+    },
+  });
+}
   } catch (err) {
     console.error("TASK CREATE ERROR:", err);
   }
