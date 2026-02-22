@@ -111,7 +111,7 @@ function addMinutesToLocal(local, minutes) {
 
   return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`;
 }
-export function startBot({ userId }) {
+function startBot({ userId }) {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
@@ -241,3 +241,4 @@ const result = await calendar.events.insert({
 
   return bot;
 }
+  module.exports = { startbot };
