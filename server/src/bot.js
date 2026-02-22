@@ -4,28 +4,25 @@ import { parseCommand, normalizePriority } from "./parse.js"
 import { google } from "googleapis"
 
 /**
-* Split de partes por "/"
-* "titulo / Rol / high / viernes" => ["titulo","Rol","high","viernes"]
+* Helpers
 */
 function splitParts(payload) {
+// "titulo / Rol / high / viernes" => ["titulo","Rol","high","viernes"]
 return (payload || "")
 .split("/")
 .map((s) => s.trim())
 .filter(Boolean);
 }
 
-/**
-* Extrae campos estilo: loc: Miami / desc: texto / invite: a@a.com,b@b.com / task: ...
-* key ejemplo: "loc", "desc", "invite", "task"
-*/
 function pickField(str, key) {
+// key ejemplo: "loc", "desc", "invite", "task"
 const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
 const m = (str || "").match(re);
 return m ? m[1].trim() : ""
 }
 
-/** Quita loc:/desc:/invite:/task: del texto principal */
 function removeFields(str) {
+// Quita loc:/desc:/invite:/task: del texto principal
 return (str || "")
 .replace(/\bloc\s*:\s*[^/]+/gi, "")
 .replace(/\bdesc\s*:\s*[^/]+/gi, "")
@@ -52,7 +49,7 @@ let creds;
 try {
 creds = JSON.parse(raw);
 } catch {
-// por si el JSON viene con \n literal
+// por si el JSON viene con \n literal escapado
 creds = JSON.parse(raw.replace(/\\n/g, "\n"));
 }
 
@@ -70,12 +67,16 @@ return String(n).padStart(2, "0");
 }
 
 /**
-* Devuelve "YYYY-MM-DDTHH:mm:00" interpretando "mañana 3pm" en hora NY.
-* Si incluye fecha explícita "YYYY-MM-DD 15:00" usa esa fecha.
+* Devuelve "YYYY-MM-DDTHH:mm:00" y tz "America/New_York"
+* Acepta:
+* - "mañana 3pm"
+* - "tomorrow 3:30pm"
+* - "2026-02-23 15:00"
 */
 function parseWhenToNYLocal(whenText) {
 const tz = "America/New_York"
 
+// “Ahora” en NY (evita depender del timezone del server)
 const nowNY = new Date(
 new Date().toLocaleString("en-US", { timeZone: tz })
 );
@@ -87,7 +88,10 @@ if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
 base.setDate(base.getDate() + 1);
 }
 
-// hora (ej: 3pm, 3:30pm, 15:00)
+// Fecha explícita YYYY-MM-DD
+const d = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+
+// Hora (ej: 3pm, 3:30pm, 15:00)
 const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
 if (!m) {
 throw new Error(
@@ -102,8 +106,6 @@ const ampm = (m[3] || "").toLowerCase();
 if (ampm === "pm" && hh < 12) hh += 12;
 if (ampm === "am" && hh === 12) hh = 0;
 
-// Si el usuario puso fecha explícita YYYY-MM-DD
-const d = w.match(/(\d{4})-(\d{2})-(\d{2})/);
 if (d) {
 const [, Y, M, D] = d;
 return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
@@ -116,6 +118,7 @@ return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
 }
 
 function addMinutesToLocal(local, minutes) {
+// local: YYYY-MM-DDTHH:mm:00
 const [datePart, timePart] = local.split("T");
 const [Y, M, D] = datePart.split("-").map(Number);
 const [hh, mm] = timePart.split(":").map(Number);
@@ -132,19 +135,21 @@ const outMin = pad2(dt.getMinutes());
 return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`;
 }
 
+/**
+* EVENT handler
+* Soporta:
+* event: Título / mañana 3pm / 60 / loc: Miami / desc: prueba / invite: a@x.com,b@y.com
+*/
 async function handleEventCommand({ bot, chatId, text }) {
 const calendarId = process.env.GOOGLE_CALENDAR_ID;
 if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
 
-// Acepta: "event: titulo / cuando / duración / loc: ... / desc: ... / invite: ..."
+// Acepta: "event: titulo / cuando / duración"
 const cleanedRaw = text.replace(/^\s*\/?event\b\s*:?\s*/i, "").trim();
 
 const location = pickField(cleanedRaw, "loc");
 const description = pickField(cleanedRaw, "desc");
 const inviteRaw = pickField(cleanedRaw, "invite");
-// taskRaw queda listo si luego quieres “evento + tarea vinculada”
-const taskRaw = pickField(cleanedRaw, "task");
-void taskRaw;
 
 const cleaned = removeFields(cleanedRaw);
 const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
@@ -157,34 +162,47 @@ const safeMinutes = Number.isFinite(minutes) ? minutes : 60;
 const { tz, local } = parseWhenToNYLocal(whenText);
 const endLocal = addMinutesToLocal(local, safeMinutes);
 
+const calendar = getCalendarClient();
+
+// Intento de asistentes (pero service account NO puede invitar sin DWD)
 const attendees = parseInviteList(inviteRaw);
 
+// ⚠️ Para evitar el error “Service accounts cannot invite…”
+// NO enviamos attendees en requestBody.
 const requestBody = {
 summary: title,
 start: { dateTime: local, timeZone: tz },
 end: { dateTime: endLocal, timeZone: tz },
 ...(location ? { location } : {}),
 ...(description ? { description } : {}),
-...(attendees.length ? { attendees } : {}),
 };
-
-const calendar = getCalendarClient();
 
 const result = await calendar.events.insert({
 calendarId,
 requestBody,
-sendUpdates: attendees.length ? "all" : "none",
+sendUpdates: "none",
 });
 
 const link = result?.data?.htmlLink || ""
+
+const warnInvite =
+attendees.length > 0
+? "\n⚠️ Nota: ignoré `invite:` porque las Service Accounts no pueden enviar invitaciones sin Domain-Wide Delegation."
+: ""
+
 await bot.sendMessage(
 chatId,
-`✅ Evento creado:\n${title}\n🕒 ${local} (${tz})\n${link}`
+`✅ Evento creado:\n${title}\n🕒 ${local} (${tz})\n${link}${warnInvite}`
 );
 }
 
+/**
+* Main
+*/
 export function startBot({ userId }) {
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+polling: true,
+});
 
 bot.on("message", async (msg) => {
 const chatId = msg.chat.id;
@@ -203,7 +221,7 @@ chatId,
 return;
 }
 
-// RESTO comandos
+// OTHER COMMANDS
 const cmd = parseCommand(text);
 
 if (cmd.type === "task") {
@@ -232,7 +250,11 @@ orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
 take: 10,
 });
 
-const lines = ["🔴 Top 10 tareas:", ...tasks.map((t) => `- [P${t.priority}] ${t.title}`)];
+const lines = [
+"🔴 Top 10 tareas:",
+...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+];
+
 await bot.sendMessage(chatId, lines.join("\n"));
 return;
 }
@@ -248,6 +270,7 @@ const lines = [
 "📌 Pendientes:",
 ...tasks.map((t) => `- [${t.status}] [P${t.priority}] ${t.title}`),
 ];
+
 await bot.sendMessage(chatId, lines.join("\n"));
 return;
 }
@@ -265,7 +288,10 @@ orderBy: { createdAt: "asc" },
 });
 
 if (!task) {
-await bot.sendMessage(chatId, `No encontré tarea que coincida con: "${cmd.payload}"`);
+await bot.sendMessage(
+chatId,
+`No encontré tarea que coincida con: "${cmd.payload}"`
+);
 return;
 }
 
@@ -278,6 +304,7 @@ await bot.sendMessage(chatId, `✅ Marcada como DONE: ${task.title}`);
 return;
 }
 
+// HELP
 await bot.sendMessage(
 chatId,
 [
@@ -288,7 +315,10 @@ chatId,
 "• top",
 "• hoy",
 "• done: fillers",
-"• event: Test / mañana 5pm / 60 / loc: Miami / desc: prueba / invite: a@a.com,b@b.com",
+"",
+"Evento:",
+"• event: prueba / mañana 5pm / 60 / loc: Miami / desc: test",
+"• (invite: se ignora en Service Account)",
 ].join("\n")
 );
 });
