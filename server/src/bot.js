@@ -8,19 +8,18 @@ HELPERS
 ========================= */
 
 function splitParts(payload) {
-// "titulo / Rol / high / viernes" => parts
 return payload.split("/").map((s) => s.trim()).filter(Boolean);
 }
 
 function pickField(str, key) {
-// key ejemplo: "loc", "desc", "invite", "task"
+// key: loc | desc | invite | task
+// acepta: "loc: Miami" hasta antes del próximo "/"
 const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
 const m = str.match(re);
 return m ? m[1].trim() : ""
 }
 
 function removeFields(str) {
-// Quita loc:/desc:/invite:/task: del texto principal
 return str
 .replace(/\bloc\s*:\s*[^/]+/gi, "")
 .replace(/\bdesc\s*:\s*[^/]+/gi, "")
@@ -47,7 +46,6 @@ let creds;
 try {
 creds = JSON.parse(raw);
 } catch {
-// por si el JSON viene con \n literal
 creds = JSON.parse(raw.replace(/\\n/g, "\n"));
 }
 
@@ -68,17 +66,20 @@ return String(n).padStart(2, "0");
 function parseWhenToNYLocal(whenText) {
 const tz = "America/New_York"
 
-// “ahora” en NY (sin depender del server)
 const nowNY = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
-let base = new Date(nowNY.getTime());
+const base = new Date(nowNY.getTime());
 
-const w = (whenText || "").toLowerCase();
+const w = (whenText || "").toLowerCase().trim();
 
+// fecha explícita YYYY-MM-DD (opcional)
+const explicitDate = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+if (!explicitDate) {
 if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
 base.setDate(base.getDate() + 1);
 }
+}
 
-// hora (ej: 3pm, 3:30pm, 15:00)
+// hora (3pm, 3:30pm, 15:00)
 const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
 if (!m) {
 throw new Error('No pude leer la hora. Usa: "mañana 3pm" o "2026-02-23 15:00"');
@@ -91,10 +92,8 @@ const ampm = (m[3] || "").toLowerCase();
 if (ampm === "pm" && hh < 12) hh += 12;
 if (ampm === "am" && hh === 12) hh = 0;
 
-// Si el usuario puso fecha explícita YYYY-MM-DD
-const d = w.match(/(\d{4})-(\d{2})-(\d{2})/);
-if (d) {
-const [, Y, M, D] = d;
+if (explicitDate) {
+const [, Y, M, D] = explicitDate;
 return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
 }
 
@@ -112,21 +111,23 @@ const [hh, mm] = timePart.split(":").map(Number);
 const dt = new Date(Y, M - 1, D, hh, mm, 0);
 dt.setMinutes(dt.getMinutes() + minutes);
 
-const outY = dt.getFullYear();
-const outM = pad2(dt.getMonth() + 1);
-const outD = pad2(dt.getDate());
-const outH = pad2(dt.getHours());
-const outMin = pad2(dt.getMinutes());
+return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(
+dt.getHours()
+)}:${pad2(dt.getMinutes())}:00`;
+}
 
-return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`;
+function nyLocalToDate(localStr) {
+const [d, t] = localStr.split("T");
+const [Y, M, D] = d.split("-").map(Number);
+const [hh, mm] = t.split(":").map(Number);
+return new Date(Y, M - 1, D, hh, mm, 0);
 }
 
 /* =========================
 BOT
 ========================= */
 
-// Puedes pasar un userId fijo (owner) o dejar que use el Telegram msg.from.id
-export function startBot({ userId: defaultUserId } = {}) {
+export function startBot({ userId }) {
 if (!process.env.TELEGRAM_BOT_TOKEN) {
 throw new Error("Missing TELEGRAM_BOT_TOKEN");
 }
@@ -134,18 +135,27 @@ throw new Error("Missing TELEGRAM_BOT_TOKEN");
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 bot.on("message", async (msg) => {
-const chatId = msg.chat?.id;
-const text = msg.text || ""
-const telegramUserId = String(msg.from?.id || "");
-const userId = defaultUserId ? String(defaultUserId) : telegramUserId;
+const chatId = String(msg.chat.id);
+const text = (msg.text || "").trim();
 
-if (!chatId) return;
+// ✅ Auto-registrar chatId del owner (single owner)
+try {
+await prisma.user.update({
+where: { id: userId },
+data: {
+telegramUserId: msg.from?.id ? String(msg.from.id) : null,
+telegramChatId: chatId,
+},
+});
+} catch (e) {
+console.error("Telegram register error:", e);
+}
 
 /* ======================
 EVENT (Google Calendar)
-event: Título / mañana 3pm / 60 / loc: ... / desc: ... / invite: a@b.com,b@c.com / task: ...
+event: Título / mañana 3pm / 60 / loc: ... / desc: ... / invite: ... / task: ...
 ====================== */
-if (/^\/?event\b/i.test(text.trim())) {
+if (/^\/?event\b/i.test(text)) {
 try {
 const calendarId = process.env.GOOGLE_CALENDAR_ID;
 if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
@@ -155,7 +165,7 @@ const cleanedRaw = text.replace(/^\s*\/?event\b\s*:?\s*/i, "").trim();
 const location = pickField(cleanedRaw, "loc");
 const description = pickField(cleanedRaw, "desc");
 const inviteRaw = pickField(cleanedRaw, "invite");
-const taskRaw = pickField(cleanedRaw, "task"); // ✅ simple y seguro
+const taskRaw = pickField(cleanedRaw, "task");
 
 const cleaned = removeFields(cleanedRaw);
 const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
@@ -180,6 +190,7 @@ end: { dateTime: endLocal, timeZone: tz },
 
 let result;
 
+// intenta con attendees; si falla por delegación/invites, crea sin attendees
 try {
 const requestBody = {
 ...baseRequestBody,
@@ -193,9 +204,7 @@ sendUpdates: attendees.length ? "all" : "none",
 });
 } catch (err) {
 const msgErr = String(err?.message || err);
-
-// fallback: si el problema es por invites, creamos sin attendees
-if (attendees.length && /cannot invite attendees|delegation/i.test(msgErr)) {
+if (attendees.length && /invite|attendees|delegation|forbidden|notauthorized/i.test(msgErr)) {
 result = await calendar.events.insert({
 calendarId,
 requestBody: baseRequestBody,
@@ -209,18 +218,23 @@ throw err;
 const eventId = result?.data?.id || null;
 const link = result?.data?.htmlLink || ""
 
-// ✅ Si viene task: creamos tarea vinculada
+// ✅ Si viene task: creamos tarea vinculada (en TU usuario owner)
 let linkedTask = null;
 if (taskRaw) {
 linkedTask = await prisma.task.create({
 data: {
 userId,
 title: taskRaw,
+assignee: null,
 priority: 2,
-status: "PENDING",
 source: "calendar",
+status: "PENDING",
+dueAt: nyLocalToDate(local),
 googleEventId: eventId,
 googleEventLink: link,
+eventTimeZone: tz,
+eventStartLocal: local,
+eventEndLocal: endLocal,
 },
 });
 }
@@ -254,14 +268,12 @@ const assignee = parts[1] || null;
 const priority = normalizePriority(parts[2] || "");
 
 const task = await prisma.task.create({
-data: { userId, title, assignee, priority, source: "manual" },
+data: { userId, title, assignee, priority, source: "manual", status: "PENDING" },
 });
 
 await bot.sendMessage(
 chatId,
-`✅ Tarea creada\n• ${task.title}\n• ${
-assignee ? `Rol: ${assignee}` : "Rol: (sin asignar)"
-}\n• Prioridad: P${task.priority}`
+`✅ Tarea creada\n• ${task.title}\n• ${assignee ? `Rol: ${assignee}` : "Rol: (sin asignar)"}\n• Prioridad: P${task.priority}`
 );
 return;
 }
@@ -272,7 +284,6 @@ where: { userId, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
 orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
 take: 10,
 });
-
 const lines = ["🔴 Top 10 tareas:", ...tasks.map((t) => `- [P${t.priority}] ${t.title}`)];
 await bot.sendMessage(chatId, lines.join("\n"));
 return;
@@ -284,7 +295,6 @@ where: { userId, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
 orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
 take: 20,
 });
-
 const lines = [
 "📌 Pendientes:",
 ...tasks.map((t) => `- [${t.status}] [P${t.priority}] ${t.title}`),
@@ -319,6 +329,7 @@ await bot.sendMessage(chatId, `✅ Marcada como DONE: ${task.title}`);
 return;
 }
 
+// Help / fallback
 await bot.sendMessage(
 chatId,
 [
@@ -330,11 +341,9 @@ chatId,
 "• hoy",
 "• done: fillers",
 "",
-"Evento:",
-"• event: visita / mañana 5pm / 60 / loc: Miami / desc: cocina",
-"• (opcional) invite: a@b.com,b@c.com",
-"• (opcional) task: Llamar a cliente",
-
+"Evento (Google Calendar):",
+"• event: visita eddy / mañana 5pm / 60 / loc: Miami / desc: medir cocina / task: enviar estimate",
+"• invite: a@b.com,b@c.com (puede ignorarse si el service account no puede invitar)",
 ].join("\n")
 );
 });
