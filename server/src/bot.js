@@ -153,9 +153,8 @@ console.error("Telegram register error:", e);
 
 /* ======================
 EVENT (Google Calendar)
-event: Título / mañana 3pm / 60 / loc: ... / desc: ... / invite: ... / task: ...
 ====================== */
-if (/^\/?event\b/i.test(text)) {
+if (/^\/?event\b/i.test(text.trim())) {
 try {
 const calendarId = process.env.GOOGLE_CALENDAR_ID;
 if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
@@ -178,63 +177,37 @@ const { tz, local } = parseWhenToNYLocal(whenText);
 const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
 
 const attendees = parseInviteList(inviteRaw);
+
 const calendar = getCalendarClient();
 
-const baseRequestBody = {
+const requestBody = {
 summary: title,
 start: { dateTime: local, timeZone: tz },
 end: { dateTime: endLocal, timeZone: tz },
 ...(location ? { location } : {}),
 ...(description ? { description } : {}),
-};
-
-let result;
-
-// intenta con attendees; si falla por delegación/invites, crea sin attendees
-try {
-const requestBody = {
-...baseRequestBody,
 ...(attendees.length ? { attendees } : {}),
 };
 
-result = await calendar.events.insert({
+const result = await calendar.events.insert({
 calendarId,
 requestBody,
 sendUpdates: attendees.length ? "all" : "none",
 });
-} catch (err) {
-const msgErr = String(err?.message || err);
-if (attendees.length && /invite|attendees|delegation|forbidden|notauthorized/i.test(msgErr)) {
-result = await calendar.events.insert({
-calendarId,
-requestBody: baseRequestBody,
-sendUpdates: "none",
-});
-} else {
-throw err;
-}
-}
 
-const eventId = result?.data?.id || null;
 const link = result?.data?.htmlLink || ""
 
-// ✅ Si viene task: creamos tarea vinculada (en TU usuario owner)
+// ✅ Crear tarea vinculada si existe task:
 let linkedTask = null;
+
 if (taskRaw) {
 linkedTask = await prisma.task.create({
 data: {
 userId,
 title: taskRaw,
-assignee: null,
 priority: 2,
-source: "calendar",
 status: "PENDING",
-dueAt: nyLocalToDate(local),
-googleEventId: eventId,
-googleEventLink: link,
-eventTimeZone: tz,
-eventStartLocal: local,
-eventEndLocal: endLocal,
+source: "calendar",
 },
 });
 }
@@ -250,9 +223,11 @@ linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
 ].filter(Boolean);
 
 await bot.sendMessage(chatId, lines.join("\n"));
+
 } catch (e) {
 await bot.sendMessage(chatId, `❌ No pude crear el evento. Detalle: ${e.message}`);
 }
+
 return;
 }
 
