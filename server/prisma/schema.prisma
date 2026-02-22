@@ -40,11 +40,9 @@ model Task {
   eventStartLocal String?
   eventEndLocal String?
 
-
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId, status])
   @@index([userId, dueAt])
   @@unique([userId, source, externalId])
 }
-
