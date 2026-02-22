@@ -28,7 +28,7 @@ return str
 .replace(/\s+/g, " ")
 .trim();
 }
-
+ 
 function parseInviteList(v) {
 if (!v) return [];
 return v
