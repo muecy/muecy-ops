@@ -160,7 +160,14 @@ export function startBot() {
         const location = pickField(cleanedRaw, "loc");
         const description = pickField(cleanedRaw, "desc");
         const inviteRaw = pickField(cleanedRaw, "invite");
-        const taskRaw = pickField(cleanedRaw, "task");
+        const let taskRaw = "";
+
+if (cleanedRaw.toLowerCase().includes("task:")) {
+  taskRaw = cleanedRaw.split(/task:/i)[1];
+  if (taskRaw) {
+    taskRaw = taskRaw.split("/")[0].trim();
+  }
+}
 
         const cleaned = removeFields(cleanedRaw);
         const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
