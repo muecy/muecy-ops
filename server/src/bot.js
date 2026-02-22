@@ -14,7 +14,7 @@ function splitParts(payload) {
 
 function pickField(str, key) {
   // key ejemplo: "loc", "desc", "invite", "task"
-  const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
+  const re = new RegExp(`${key}\\s*:\\s*([^/]+)`, "i");
   const m = str.match(re);
   return m ? m[1].trim() : "";
 }
