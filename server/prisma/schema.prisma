@@ -33,6 +33,13 @@ model Task {
   externalId  String?  // gmail messageId / calendar eventId
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+// vínculo con evento de Google
+googleEventId String?
+googleEventLink String?
+eventTimeZone String?
+eventStartLocal String?
+eventEndLocal String?
+
 
   user User @relation(fields: [userId], references: [id])
 
