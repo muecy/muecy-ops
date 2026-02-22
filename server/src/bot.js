@@ -138,7 +138,7 @@ function nyLocalToDate(localStr) {
    BOT
 ========================= */
 
-export function startBot({ userId }) {
+export function startBot() {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
