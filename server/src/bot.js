@@ -34,10 +34,10 @@ function pad2(n) {
 // Devuelve "YYYY-MM-DDTHH:mm:00" en hora local de NY (sin Z)
 function parseWhenToNYLocal(whenText) {
   const tz = "America/New_York";
-  const now = new Date();
-
-  // base date (hoy/mañana)
-  let base = new Date(now.getTime());
+const nowNY = new Date(
+  new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
+);
+let base = new Date(nowNY.getTime());
   const w = (whenText || "").toLowerCase();
 
   if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
