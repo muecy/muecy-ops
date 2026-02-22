@@ -1,19 +1,136 @@
 import TelegramBot from "node-telegram-bot-api";
 import { prisma } from "./db.js";
 import { parseCommand, normalizePriority } from "./parse.js";
+import { google } from "googleapis";
 
 function splitParts(payload) {
   // "titulo / Rol / high / viernes" => parts
   return payload.split("/").map(s => s.trim()).filter(Boolean);
 }
+function getCalendarClient() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON");
+  let creds;
+  try {
+    creds = JSON.parse(raw);
+  } catch {
+    // por si el JSON viene con \n literal
+    creds = JSON.parse(raw.replace(/\\n/g, "\n"));
+  }
 
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ["https://www.googleapis.com/auth/calendar"],
+  });
+
+  return google.calendar({ version: "v3", auth });
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// Devuelve "YYYY-MM-DDTHH:mm:00" en hora local de NY (sin Z)
+function parseWhenToNYLocal(whenText) {
+  const tz = "America/New_York";
+  const now = new Date();
+
+  // base date (hoy/mañana)
+  let base = new Date(now.getTime());
+  const w = (whenText || "").toLowerCase();
+
+  if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
+    base.setDate(base.getDate() + 1);
+  }
+
+  // hora (ej: 3pm, 3:30pm, 15:00)
+  const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) throw new Error('No pude leer la hora. Usa ejemplo: "mañana 3pm" o "2026-02-23 15:00"');
+
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2] || "0", 10);
+  const ampm = (m[3] || "").toLowerCase();
+
+  if (ampm === "pm" && hh < 12) hh += 12;
+  if (ampm === "am" && hh === 12) hh = 0;
+
+  // Si el usuario puso fecha explícita YYYY-MM-DD
+  const d = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (d) {
+    const [_, Y, M, D] = d;
+    return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
+  }
+
+  // Usamos la fecha de "base" (ojo: depende del server, pero luego fijamos timeZone NY)
+  const Y = base.getFullYear();
+  const M = pad2(base.getMonth() + 1);
+  const D = pad2(base.getDate());
+  return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
+}
+
+function addMinutesToLocal(local, minutes) {
+  // local: YYYY-MM-DDTHH:mm:00
+  const [datePart, timePart] = local.split("T");
+  const [Y, M, D] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+
+  const dt = new Date(Y, M - 1, D, hh, mm, 0);
+  dt.setMinutes(dt.getMinutes() + minutes);
+
+  const outY = dt.getFullYear();
+  const outM = pad2(dt.getMonth() + 1);
+  const outD = pad2(dt.getDate());
+  const outH = pad2(dt.getHours());
+  const outMin = pad2(dt.getMinutes());
+
+  return `${outY}-${outM}-${outD}T${outH}:${outMin}:00`;
+}
 export function startBot({ userId }) {
   const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
   bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text || "";
+// ======================
+// EVENT command (Google Calendar)
+// Uso recomendado:
+// event: Título / mañana 3pm / 60
+// event: Título / 2026-02-23 15:00 / 90
+// ======================
+if (/^\/?event\b/i.test(text.trim())) {
+  try {
+    const calendarId = process.env.GOOGLE_CALENDAR_ID;
+    if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
 
+    // Acepta: "event: titulo / cuando / duración"
+    const cleaned = text.replace(/^\/?event\s*:?\s*/i, "").trim();
+    const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean);
+
+    const title = parts[0] || "Evento Muëcy Ops";
+    const whenText = parts[1] || "";
+    const minutes = parseInt(parts[2] || "60", 10);
+
+    const { tz, local } = parseWhenToNYLocal(whenText);
+    const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
+
+    const calendar = getCalendarClient();
+    const result = await calendar.events.insert({
+      calendarId,
+      requestBody: {
+        summary: title,
+        start: { dateTime: local, timeZone: tz },
+        end: { dateTime: endLocal, timeZone: tz },
+      },
+    });
+
+    const link = result?.data?.htmlLink || "";
+    await bot.sendMessage(chatId, `✅ Evento creado:\n${title}\n🕒 ${local} (${tz})\n${link}`);
+  } catch (e) {
+    await bot.sendMessage(chatId, `❌ No pude crear el evento. Detalle: ${e.message}`);
+  }
+  return;
+}
     const cmd = parseCommand(text);
 
     if (cmd.type === "task") {
