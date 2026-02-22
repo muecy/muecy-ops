@@ -6,6 +6,31 @@ import { google } from "googleapis";
 function splitParts(payload) {
   // "titulo / Rol / high / viernes" => parts
   return payload.split("/").map(s => s.trim()).filter(Boolean);
+  function pickField(str, key) {
+  // key ejemplo: "loc", "desc", "invite", "task"
+  const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
+  const m = str.match(re);
+  return m ? m[1].trim() : "";
+}
+
+function removeFields(str) {
+  // Quita loc:/desc:/invite:/task: del texto principal
+  return str
+    .replace(/\bloc\s*:\s*[^/]+/gi, "")
+    .replace(/\bdesc\s*:\s*[^/]+/gi, "")
+    .replace(/\binvite\s*:\s*[^/]+/gi, "")
+    .replace(/\btask\s*:\s*[^/]+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseInviteList(v) {
+  if (!v) return [];
+  return v
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(email => ({ email }));
 }
 function getCalendarClient() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
@@ -104,8 +129,16 @@ if (/^\/?event\b/i.test(text.trim())) {
     if (!calendarId) throw new Error("Missing GOOGLE_CALENDAR_ID");
 
     // Acepta: "event: titulo / cuando / duración"
-    const cleaned = text.replace(/^\/?event\s*:?\s*/i, "").trim();
-    const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean);
+  const cleanedRaw = text.replace(/^\s*\/?event\b\s*:?\s*/i, "").trim();
+
+const location = pickField(cleanedRaw, "loc");
+const description = pickField(cleanedRaw, "desc");
+const inviteRaw = pickField(cleanedRaw, "invite");
+const taskRaw = pickField(cleanedRaw, "task");
+
+const cleaned = removeFields(cleanedRaw);
+
+const parts = cleaned.split("/").map(s => s.trim()).filter(Boolean;
 
     const title = parts[0] || "Evento Muëcy Ops";
     const whenText = parts[1] || "";
@@ -114,15 +147,24 @@ if (/^\/?event\b/i.test(text.trim())) {
     const { tz, local } = parseWhenToNYLocal(whenText);
     const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
 
-    const calendar = getCalendarClient();
-    const result = await calendar.events.insert({
-      calendarId,
-      requestBody: {
-        summary: title,
-        start: { dateTime: local, timeZone: tz },
-        end: { dateTime: endLocal, timeZone: tz },
-      },
-    });
+const calendar = getCalendarClient();
+
+const attendees = parseInviteList(inviteRaw);
+
+const requestBody = {
+  summary: title,
+  start: { dateTime: local, timeZone: tz },
+  end: { dateTime: endLocal, timeZone: tz },
+  ...(location ? { location } : {}),
+  ...(description ? { description } : {}),
+  ...(attendees.length ? { attendees } : {}),
+};
+
+const result = await calendar.events.insert({
+  calendarId,
+  requestBody,
+  sendUpdates: attendees.length ? "all" : "none",
+});
 
     const link = result?.data?.htmlLink || "";
     await bot.sendMessage(chatId, `✅ Evento creado:\n${title}\n🕒 ${local} (${tz})\n${link}`);
