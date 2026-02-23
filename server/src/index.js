@@ -1,333 +1,342 @@
 // server/src/index.js
-import "dotenv/config"
-import express from "express"
-import cron from "node-cron"
+import "dotenv/config";
+import express from "express";
+import cron from "node-cron";
 
-import { prisma } from "./db.js"
-import { getOAuthClient, SCOPES } from "./google.js"
-import { syncGmailToTasks } from "./jobs.js"
-import { startBot } from "./bot.js"
+import { prisma } from "./db.js";
+import { getOAuthClient, SCOPES } from "./google.js";
+import { syncGmailToTasks } from "./jobs.js";
 
 /* =========================
 APP
 ========================= */
 const app = express();
-app.use(express.json({ limit: "1mb" }));
-// --------------------
-// GOOGLE OAUTH ROUTES
-// --------------------
-app.get("/auth/google", (req, res) => {
-const oauth2Client = getOAuthClient();
+app.use(express.json({ limit: "2mb" }));
 
-const url = oauth2Client.generateAuthUrl({
-access_type: "offline",
-prompt: "consent",
-scope: SCOPES,
-});
-
-return res.redirect(url);
-});
-
-app.get("/auth/google/callback", async (req, res) => {
-try {
-const code = req.query.code;
-if (!code) return res.status(400).send("Missing ?code");
-
-const oauth2Client = getOAuthClient();
-const { tokens } = await oauth2Client.getToken(code);
-oauth2Client.setCredentials(tokens);
-
-// Guardar tokens en el OWNER (MVP single owner)
-const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local"
-await prisma.user.update({
-where: { email: ownerEmail },
-data: {
-accessToken: tokens.access_token || null,
-refreshToken: tokens.refresh_token || null,
-tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
-},
-});
-
-return res.send("✅ Google conectado. Ya puedes cerrar esta ventana.");
-} catch (err) {
-console.error(err);
-return res.status(500).send("OAuth callback error. Revisa consola.");
+/* =========================
+UTILS
+========================= */
+function getBaseUrl(req) {
+  // Prefer APP_BASE_URL (Railway) but fallback to request host
+  return (
+    process.env.APP_BASE_URL ||
+    `${req.protocol}://${req.get("host")}`
+  );
 }
-});
-// ===============================
-// TEST API ENDPOINTS
-// ===============================
 
-app.get("/api/users", async (req, res) => {
-try {
-const users = await prisma.user.findMany({
-include: { tasks: true }
-});
-res.json(users);
-} catch (err) {
-console.error(err);
-res.status(500).json({ error: "Failed to fetch users" });
-}
-});
+async function telegramSend(chatId, text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !chatId) return { ok: false, skipped: true };
 
-app.get("/api/tasks", async (req, res) => {
-try {
-const tasks = await prisma.task.findMany();
-res.json(tasks);
-} catch (err) {
-console.error(err);
-res.status(500).json({ error: "Failed to fetch tasks" });
+  const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
 }
-});
+
 /* =========================
 SINGLE OWNER (MVP)
 ========================= */
 async function ensureOwner() {
-const email = process.env.OWNER_EMAIL || "owner@muecy.local"
-let user = await prisma.user.findUnique({ where: { email } });
-if (!user) user = await prisma.user.create({ data: { email } });
-return user;
+  const email = process.env.OWNER_EMAIL || "owner@muecy.local";
+  let user = await prisma.user.findUnique({ where: { email } });
+  if (!user) user = await prisma.user.create({ data: { email } });
+  return user;
 }
 
-/* =========================
-BOOT
-========================= */
 let owner = null;
-let bot = null;
 
 async function boot() {
-owner = await ensureOwner();
-
-// Start Telegram bot (single owner)
-if (process.env.TELEGRAM_BOT_TOKEN) {
-bot = startBot({ userId: owner.id });
-}
-
-
-console.log("✅ Boot OK");
-console.log(`👤 Owner: ${owner.email} (${owner.id})`);
+  owner = await ensureOwner();
+  console.log("✅ Boot OK");
+  console.log(`👤 Owner: ${owner.email} (${owner.id})`);
 }
 
 /* =========================
 ROUTES
 ========================= */
-
 // Health / Root
-app.get("/", (req, res) => {
-res.status(200).send("Muëcy Ops is running ✅");
+app.get("/", (req, res) => res.status(200).send("Muëcy Ops is running ✅"));
+app.get("/health", (req, res) => res.status(200).json({ ok: true, service: "muecy-ops" }));
+
+/* -------------------------
+GOOGLE OAUTH
+------------------------- */
+app.get("/auth/google", async (req, res) => {
+  const oauth2 = getOAuthClient();
+
+  const url = oauth2.generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: SCOPES,
+  });
+
+  return res.redirect(url);
 });
 
-app.get("/health", (req, res) => {
-res.status(200).json({ ok: true, service: "muecy-ops" });
-});
-
-// OAuth start
-app.get("/auth/google", (req, res) => {
-const oauth2 = getOAuthClient();
-const url = oauth2.generateAuthUrl({
-access_type: "offline",
-scope: SCOPES,
-prompt: "consent",
-});
-res.redirect(url);
-});
-
-// OAuth callback
 app.get("/auth/google/callback", async (req, res) => {
-try {
-const code = req.query.code;
-if (!code) return res.status(400).send("Missing code");
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).send("Missing ?code");
 
-const oauth2 = getOAuthClient();
-const { tokens } = await oauth2.getToken(code);
+    const oauth2 = getOAuthClient();
+    const { tokens } = await oauth2.getToken(code);
+    oauth2.setCredentials(tokens);
 
-if (!owner?.id) owner = await ensureOwner();
+    const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local";
+    await prisma.user.update({
+      where: { email: ownerEmail },
+      data: {
+        accessToken: tokens.access_token || null,
+        refreshToken: tokens.refresh_token || null,
+        tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+      },
+    });
 
-await prisma.user.update({
-where: { id: owner.id },
-data: {
-accessToken: tokens.access_token || null,
-refreshToken: tokens.refresh_token || null,
-tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
-},
+    return res.send("✅ Google conectado. Ya puedes cerrar esta ventana.");
+  } catch (err) {
+    console.error("OAuth callback error:", err);
+    return res.status(500).send("OAuth callback error. Revisa logs.");
+  }
 });
 
-res.send("✅ Google conectado. Ya puedes sincronizar.");
-} catch (e) {
-console.error("OAuth callback error:", e);
-res.status(500).send("❌ Error conectando Google.");
-}
+/* -------------------------
+API: Calendar (list next 10)
+------------------------- */
+app.get("/api/calendar/list", async (req, res) => {
+  try {
+    const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local";
+    const u = await prisma.user.findUnique({ where: { email: ownerEmail } });
+
+    if (!u?.accessToken) {
+      return res.status(401).json({
+        ok: false,
+        error: "not_connected",
+        message: "Not connected to Google yet. Go to /auth/google",
+      });
+    }
+
+    const auth = getOAuthClient();
+    auth.setCredentials({
+      access_token: u.accessToken,
+      refresh_token: u.refreshToken || undefined,
+      expiry_date: u.tokenExpiry ? new Date(u.tokenExpiry).getTime() : undefined,
+    });
+
+    const { google } = await import("googleapis");
+    const calendar = google.calendar({ version: "v3", auth });
+
+    const now = new Date().toISOString();
+    const out = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: now,
+      maxResults: 10,
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+
+    const events = (out.data.items || []).map((e) => ({
+      id: e.id,
+      summary: e.summary,
+      start: e.start?.dateTime || e.start?.date,
+      end: e.end?.dateTime || e.end?.date,
+      location: e.location || null,
+    }));
+
+    res.json({ ok: true, count: events.length, events });
+  } catch (err) {
+    console.error("Calendar fetch failed:", err);
+    res.status(500).json({ ok: false, error: "calendar_failed" });
+  }
 });
 
-// Manual sync endpoint
+/* -------------------------
+API: Manual Sync (Gmail -> Tasks)
+------------------------- */
 app.post("/sync", async (req, res) => {
-try {
-if (!owner?.id) owner = await ensureOwner();
-const r = await syncGmailToTasks(owner.id);
-res.json({ ok: true, ...r });
-} catch (e) {
-console.error("Manual sync error:", e);
-res.status(500).json({ ok: false, error: "sync_failed" });
-}
+  try {
+    if (!owner?.id) owner = await ensureOwner();
+    const r = await syncGmailToTasks(owner.id);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    console.error("Manual sync error:", e);
+    res.status(500).json({ ok: false, error: "sync_failed" });
+  }
+});
+
+/* -------------------------
+Telegram Webhook (Webhook-only)
+------------------------- */
+app.post("/telegram/webhook", async (req, res) => {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return res.sendStatus(200);
+
+    const message = req.body?.message?.text;
+    const chatId = req.body?.message?.chat?.id;
+
+    // Always respond 200 fast
+    res.sendStatus(200);
+
+    if (!chatId) return;
+
+    // Basic commands
+    if (message === "/start") {
+      await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
+      await telegramSend(chatId, "Comandos: top | hoy | /calendar | tarea: ... | done: ...");
+      return;
+    }
+
+    if (message === "/calendar") {
+      const base = getBaseUrl(req);
+      const r = await fetch(`${base}/api/calendar/list`);
+      const data = await r.json().catch(() => ({}));
+
+      const lines = (data.events || []).map((e) => `• ${e.summary || "(sin título)"}\n  ${e.start}`);
+      await telegramSend(chatId, lines.join("\n\n") || "No hay eventos próximos.");
+      return;
+    }
+
+    // Minimal MVP: show top tasks
+    if (message?.toLowerCase() === "top") {
+      if (!owner?.id) owner = await ensureOwner();
+
+      const tasks = await prisma.task.findMany({
+        where: { userId: owner.id, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
+        orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+        take: 10,
+      });
+
+      const out = [
+        "🔴 Top 10 tareas:",
+        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+      ].join("\n");
+
+      await telegramSend(chatId, out);
+      return;
+    }
+
+    // Minimal: create task via "tarea: ..."
+    if (message?.toLowerCase().startsWith("tarea:")) {
+      const title = message.slice("tarea:".length).trim();
+      if (!title) {
+        await telegramSend(chatId, "Escribe: tarea: <texto>");
+        return;
+      }
+
+      if (!owner?.id) owner = await ensureOwner();
+
+      const task = await prisma.task.create({
+        data: {
+          userId: owner.id,
+          title,
+          status: "PENDING",
+          priority: 1,
+        },
+      });
+
+      await telegramSend(chatId, `✅ Creada: [P${task.priority}] ${task.title}`);
+      return;
+    }
+
+    // Minimal: mark done via "done: <id>"
+    if (message?.toLowerCase().startsWith("done:")) {
+      const id = message.slice("done:".length).trim();
+      if (!id) {
+        await telegramSend(chatId, "Escribe: done: <taskId>");
+        return;
+      }
+
+      const updated = await prisma.task.update({
+        where: { id },
+        data: { status: "DONE" },
+      }).catch(() => null);
+
+      await telegramSend(chatId, updated ? "✅ Marcada como DONE" : "❌ No encontré ese taskId");
+      return;
+    }
+
+  } catch (err) {
+    console.error("Webhook error:", err);
+    // Even on errors, Telegram expects 200 already sent.
+  }
 });
 
 /* =========================
 DAILY BRIEFING (07:40 NY)
 ========================= */
 cron.schedule(
-"40 7 * * *",
-async () => {
-try {
-if (!owner?.id) owner = await ensureOwner();
+  "40 7 * * *",
+  async () => {
+    try {
+      if (!owner?.id) owner = await ensureOwner();
 
-// 1) Sync Gmail -> Tasks
-await syncGmailToTasks(owner.id);
+      // 1) Sync Gmail -> Tasks
+      await syncGmailToTasks(owner.id);
 
-// 2) Fetch top tasks
-const tasks = await prisma.task.findMany({
-where: {
-userId: owner.id,
-status: { in: ["PENDING", "DOING", "BLOCKED"] },
-},
-orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-take: 10,
-});
+      // 2) Fetch top tasks
+      const tasks = await prisma.task.findMany({
+        where: {
+          userId: owner.id,
+          status: { in: ["PENDING", "DOING", "BLOCKED"] },
+        },
+        orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+        take: 10,
+      });
 
-const lines = [
-"🧠 MUËCY OPS — Briefing",
-`📅 ${new Date().toLocaleDateString("en-US", {
-weekday: "long",
-year: "numeric",
-month: "short",
-day: "numeric",
-})}`,
-"",
-"🔴 Top tareas:",
-...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
-"",
-"Escribe: top | hoy | tarea: ... | done: ...",
-];
+      const lines = [
+        "🧠 MUËCY OPS — Briefing",
+        `📅 ${new Date().toLocaleDateString("en-US", {
+          weekday: "long",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        })}`,
+        "",
+        "🔴 Top tareas:",
+        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+        "",
+        "Comandos: top | /calendar | tarea: ... | done: ...",
+      ].join("\n");
 
-// 3) Send Telegram
-if (process.env.TELEGRAM_CHAT_ID && bot?.sendMessage) {
-await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, lines.join("\n"));
-} else {
-console.log("ℹ️ Briefing listo (no TELEGRAM_CHAT_ID configurado).");
-}
-} catch (e) {
-console.error("Briefing error:", e);
-}
-},
-{ timezone: "America/New_York" }
+      // 3) Send Telegram (chat id fixed by env)
+      if (process.env.TELEGRAM_CHAT_ID) {
+        await telegramSend(process.env.TELEGRAM_CHAT_ID, lines);
+      } else {
+        console.log("ℹ️ Briefing listo (no TELEGRAM_CHAT_ID configurado).");
+      }
+    } catch (e) {
+      console.error("Briefing error:", e);
+    }
+  },
+  { timezone: "America/New_York" }
 );
 
 /* =========================
 ERROR HANDLERS
 ========================= */
-process.on("unhandledRejection", (err) => {
-console.error("UnhandledRejection:", err);
-});
-
-process.on("uncaughtException", (err) => {
-console.error("UncaughtException:", err);
-});
+process.on("unhandledRejection", (err) => console.error("UnhandledRejection:", err));
+process.on("uncaughtException", (err) => console.error("UncaughtException:", err));
 
 /* =========================
 START SERVER
 ========================= */
 const port = Number(process.env.PORT || 8080);
-app.get("/api/calendar/list", async (req, res) => {
-try {
-// Este helper debería existir en tu proyecto (ya lo importas como getOAuthClient)
-const auth = getOAuthClient();
 
-// En este MVP, guardamos tokens en el "owner"
-const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local"
-const owner = await prisma.user.findUnique({ where: { email: ownerEmail } });
-
-if (!owner?.accessToken) {
-return res.status(401).json({
-error: "Not connected to Google yet (missing accessToken). Go to /auth/google",
-});
-}
-
-// Set credentials from DB
-auth.setCredentials({
-access_token: owner.accessToken,
-refresh_token: owner.refreshToken || undefined,
-expiry_date: owner.tokenExpiry ? new Date(owner.tokenExpiry).getTime() : undefined,
-});
-
-const { google } = await import("googleapis");
-const calendar = google.calendar({ version: "v3", auth });
-
-const now = new Date().toISOString();
-const out = await calendar.events.list({
-calendarId: "primary",
-timeMin: now,
-maxResults: 10,
-singleEvents: true,
-orderBy: "startTime",
-});
-
-const events = (out.data.items || []).map(e => ({
-id: e.id,
-summary: e.summary,
-start: e.start?.dateTime || e.start?.date,
-end: e.end?.dateTime || e.end?.date,
-location: e.location,
-}));
-
-res.json({ ok: true, count: events.length, events });
-} catch (err) {
-console.error(err);
-res.status(500).json({ error: "Calendar fetch failed" });
-}
-});
-app.post("/telegram/webhook", async (req, res) => {
-  console.log("Telegram update:", req.body);
-
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const message = req.body?.message?.text;
-  const chatId = req.body?.message?.chat?.id;
-
-  if (!chatId) return res.sendStatus(200);
-
-  const send = async (text) => {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text })
-    });
-  };
-
-  if (message === "/start") {
-    await send("Muëcy Ops conectado en Railway ✅");
-  }
-
-  if (message === "/calendar") {
-    const base = process.env.APP_BASE_URL;
-    const r = await fetch(`${base}/api/calendar/list`);
-    const data = await r.json();
-
-    const lines = (data.events || []).map(e =>
-      `• ${e.summary}\n  ${e.start}`
-    );
-
-    await send(lines.join("\n\n") || "No hay eventos.");
-  }
-
-  res.sendStatus(200);
-});
 boot()
-.then(() => {
-app.listen(port, "0.0.0.0", () => {
-console.log(`Muëcy Ops running on port ${port}`);
-const base = process.env.APP_BASE_URL || "(set APP_BASE_URL)"
-console.log(`Connect Google: ${base}/auth/google`);
-});
-})
-.catch((e) => {
-console.error("❌ Boot failed:", e);
-process.exit(1);
-});
+  .then(() => {
+    app.listen(port, "0.0.0.0", () => {
+      console.log(`Muëcy Ops running on port ${port}`);
+      const base = process.env.APP_BASE_URL || `(set APP_BASE_URL)`;
+      console.log(`Connect Google: ${base}/auth/google`);
+      console.log(`Telegram webhook: ${base}/telegram/webhook`);
+    });
+  })
+  .catch((e) => {
+    console.error("❌ Boot failed:", e);
+    process.exit(1);
+  });
