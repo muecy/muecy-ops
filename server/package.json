@@ -4,7 +4,9 @@
   "type": "module",
   "main": "server/src/index.js",
   "scripts": {
-    "start": "node server/src/index.js"
+    "build": "prisma generate",
+    "start": "node server/src/index.js",
+    "postinstall": "prisma generate"
   },
   "engines": {
     "node": ">=18"
@@ -15,5 +17,8 @@
     "express": "^4.19.2",
     "googleapis": "^140.0.0",
     "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
   }
 }
