@@ -179,102 +179,63 @@ app.post("/telegram/webhook", async (req, res) => {
     const message = req.body?.message?.text;
     const chatId = req.body?.message?.chat?.id;
 
-    // Always respond 200 fast
     res.sendStatus(200);
-
     if (!chatId) return;
 
-    // Basic commands
+    const telegramSend = async (text) => {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text })
+      });
+    };
+
     if (message === "/start") {
-      await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
-      await telegramSend(chatId, "Comandos: top | hoy | /calendar | tarea: ... | done: ...");
+      await telegramSend("Muëcy Ops conectado en Railway ✅");
+      await telegramSend("Comandos: top | hoy | /calendar | tarea: ... | done: ...");
       return;
     }
 
-    if (message === "/calendar") {
-      const base = getBaseUrl(req);
-      const r = await fetch(`${base}/api/calendar/list`);
-      const data = await r.json().catch(() => ({}));
+    if (message?.toLowerCase().startsWith("tarea:")) {
+      const title = message.slice("tarea:".length).trim();
+      if (!title) {
+        await telegramSend("⚠️ Escribe algo después de 'tarea:'");
+        return;
+      }
 
-      const lines = (data.events || []).map((e) => `• ${e.summary || "(sin título)"}\n  ${e.start}`);
-      await telegramSend(chatId, lines.join("\n\n") || "No hay eventos próximos.");
-      return;
-    }
-
-    // Minimal MVP: show top tasks
-    if (message?.toLowerCase() === "top") {
       if (!owner?.id) owner = await ensureOwner();
 
-      const tasks = await prisma.task.findMany({
-        where: { userId: owner.id, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
-        orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-        take: 10,
+      await prisma.task.create({
+        data: {
+          title,
+          status: "PENDING",
+          priority: 2,
+          userId: owner.id
+        }
       });
 
-      const out = [
-        "🔴 Top 10 tareas:",
-        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
-      ].join("\n");
-
-      await telegramSend(chatId, out);
+      await telegramSend(`✅ Tarea creada: ${title}`);
       return;
     }
 
-  // Minimal: create task via "tarea: ..."
-if (message?.toLowerCase().startsWith("tarea:")) {
-  const title = message.slice("tarea:".length).trim();
+    if (message?.toLowerCase().startsWith("done:")) {
+      const id = Number(message.slice("done:".length).trim());
+      if (!id) {
+        await telegramSend("⚠️ Usa: done: ID");
+        return;
+      }
 
-  if (!title) {
-    await telegramSend(chatId, "⚠️ Escribe algo después de 'tarea:'");
-    return;
-  }
-
-  if (!owner?.id) owner = await ensureOwner();
-
-  await prisma.task.create({
-    data: {
-      title,
-      status: "PENDING",
-      priority: 2,
-      userId: owner.id
-    }
-  });
-
-  await telegramSend(chatId, `✅ Tarea creada: ${title}`);
-  return;
-}
-
-    // Minimal: mark task done via "done: 3"
-if (message?.toLowerCase().startsWith("done:")) {
-  const idText = message.slice("done:".length).trim();
-  const id = Number(idText);
-
-  if (!id) {
-    await telegramSend(chatId, "⚠️ Usa: done: ID");
-    return;
-  }
-
-  await prisma.task.update({
-    where: { id },
-    data: { status: "DONE" }
-  });
-
-  await telegramSend(chatId, `✅ Tarea ${id} completada`);
-  return;
-}
-
-      const updated = await prisma.task.update({
+      await prisma.task.update({
         where: { id },
-        data: { status: "DONE" },
-      }).catch(() => null);
+        data: { status: "DONE" }
+      });
 
-      await telegramSend(chatId, updated ? "✅ Marcada como DONE" : "❌ No encontré ese taskId");
+      await telegramSend(`✅ Tarea ${id} completada`);
       return;
     }
 
-  } catch (err) {
-    console.error("Webhook error:", err);
-    // Even on errors, Telegram expects 200 already sent.
+  } catch (e) {
+    console.error("Telegram webhook error:", e);
   }
 });
 
