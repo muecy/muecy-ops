@@ -232,31 +232,36 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await prisma.task.create({
         data: {
-          title,
-          status: "PENDING",
-          priority: 2,
-          userId: owner.id
-        }
-      });
+       const msg = (message || "").trim().toLowerCase();
 
-      await telegramSend(`✅ Tarea creada: ${title}`);
-      return;
-    }
+if (msg === "top") {
+  if (!owner?.id) owner = await ensureOwner();
 
-    if (message?.toLowerCase().startsWith("done:")) {
-      const id = Number(message.slice("done:".length).trim());
-      if (!id) {
-        await telegramSend("⚠️ Usa: done: ID");
-        return;
-      }
+  const tasks = await prisma.task.findMany({
+    where: {
+      userId: owner.id,
+      status: { in: ["PENDING", "DOING", "BLOCKED"] }
+    },
+    orderBy: [
+      { priority: "asc" },
+      { createdAt: "asc" }
+    ],
+    take: 10
+  });
 
-      await prisma.task.update({
-        where: { id },
-        data: { status: "DONE" }
-      });
+  if (!tasks.length) {
+    await telegramSend(chatId, "No hay tareas pendientes.");
+    return;
+  }
 
-      await telegramSend(`✅ Tarea ${id} completada`);
-      return;
+  const out = [
+    "🔴 Top 10 tareas:",
+    ...tasks.map(t => `- [P${t.priority}] ${t.title}`)
+  ].join("\n");
+
+  await telegramSend(chatId, out);
+  return;
+}
     if (message && message.toLowerCase() === "top") {
 
     const tasks = await prisma.task.findMany({
