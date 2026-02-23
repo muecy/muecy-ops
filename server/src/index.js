@@ -232,14 +232,9 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await prisma.task.create({
         data: {
-    if (message && message.trim().toLowerCase() === "top") {
-
-  if (msg === "top") {
-  if (!owner?.id) owner = await ensureOwner();
-
+   if (message && message.toLowerCase() === "top") {
   const tasks = await prisma.task.findMany({
     where: {
-      userId: owner.id,
       status: { in: ["PENDING", "DOING", "BLOCKED"] }
     },
     orderBy: [
@@ -250,7 +245,7 @@ app.post("/telegram/webhook", async (req, res) => {
   });
 
   if (!tasks.length) {
-    await telegramSend(chatId, "No hay tareas pendientes.");
+    await telegramSend(chatId, "No hay tareas.");
     return;
   }
 
@@ -261,17 +256,7 @@ app.post("/telegram/webhook", async (req, res) => {
 
   await telegramSend(chatId, out);
   return;
-}
-    if (message && message.toLowerCase() === "top") {
-
-    const tasks = await prisma.task.findMany({
-    where: {
-      status: { in: ["PENDING", "DOING", "BLOCKED"] }
-    },
-    orderBy: [
-      { priority: "asc" },
-      { createdAt: "asc" }
-    ],
+} 
     take: 10
   });
 
