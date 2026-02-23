@@ -12,12 +12,11 @@ import { syncGmailToTasks } from "./jobs.js";
 APP
 ========================= */
 const app = express();
-app.use(express.json({ limit: "2mb" }));
 
-/* =========================
-CONSTS
-========================= */
-const TZ = "America/New_York";
+// Railway / reverse proxy (para req.protocol correcto)
+app.set("trust proxy", 1);
+
+app.use(express.json({ limit: "2mb" }));
 
 /* =========================
 UTILS
@@ -41,70 +40,9 @@ async function telegramSend(chatId, text) {
   return { ok: r.ok, status: r.status, data };
 }
 
-// "mañana 9pm", "tomorrow 10am", "2026-02-23 15:00", "15:30", "3pm", "hoy 6pm"
-function parseWhenToNYLocal(whenText) {
-  const w = (whenText || "").trim().toLowerCase();
-  if (!w) throw new Error("Falta fecha/hora.");
-
-  let base = DateTime.now().setZone(TZ);
-
-  // explicit date YYYY-MM-DD
-  const explicitDate = w.match(/(\d{4})-(\d{2})-(\d{2})/);
-
-  // day offset
-  if (!explicitDate) {
-    if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
-      base = base.plus({ days: 1 });
-    } else if (w.includes("hoy") || w.includes("today")) {
-      // keep same day
-    }
-  }
-
-  // time: 3pm, 3:30pm, 15:00, 15:30
-  // IMPORTANT: pick last time-like token to avoid catching years
-  const timeMatch = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?!.*\d)/i) || w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-  if (!timeMatch) {
-    throw new Error('No pude leer la hora. Ej: "mañana 9pm" o "2026-02-23 15:00"');
-  }
-
-  let hh = parseInt(timeMatch[1], 10);
-  let mm = parseInt(timeMatch[2] || "0", 10);
-  const ampm = (timeMatch[3] || "").toLowerCase();
-
-  if (Number.isNaN(hh) || Number.isNaN(mm) || hh > 23 || mm > 59) {
-    throw new Error("Hora inválida. Usa ej: 6pm, 18:30, 9:00am");
-  }
-
-  if (ampm === "pm" && hh < 12) hh += 12;
-  if (ampm === "am" && hh === 12) hh = 0;
-
-  let dt;
-  if (explicitDate) {
-    const [, Y, M, D] = explicitDate;
-    dt = DateTime.fromObject(
-      { year: Number(Y), month: Number(M), day: Number(D), hour: hh, minute: mm, second: 0 },
-      { zone: TZ }
-    );
-  } else {
-    dt = base.set({ hour: hh, minute: mm, second: 0, millisecond: 0 });
-  }
-
-  if (!dt.isValid) {
-    throw new Error("No pude interpretar fecha/hora.");
-  }
-
-  // Google Calendar API: dateTime + timeZone
-  return { tz: TZ, local: dt.toFormat("yyyy-LL-dd'T'HH:mm:ss") };
-}
-
-function addMinutesToLocal(local, minutes) {
-  const dt = DateTime.fromFormat(local, "yyyy-LL-dd'T'HH:mm:ss", { zone: TZ });
-  if (!dt.isValid) throw new Error("Fecha/hora inválida al calcular duración.");
-  return dt.plus({ minutes }).toFormat("yyyy-LL-dd'T'HH:mm:ss");
-}
-
 function pickField(str, key) {
   // key: loc | addr | desc | invite | task
+  // acepta: "loc: Miami" hasta antes del próximo "/"
   const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
   const m = str.match(re);
   return m ? m[1].trim() : "";
@@ -117,7 +55,70 @@ function stripFields(str) {
     .replace(/\bdesc\s*:\s*[^/]+/gi, "")
     .replace(/\binvite\s*:\s*[^/]+/gi, "")
     .replace(/\btask\s*:\s*[^/]+/gi, "")
+    .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Parse "mañana 9pm", "tomorrow 10am", "2026-02-23 15:00", "15:30", "3pm"
+ * Devuelve ISO local (YYYY-MM-DDTHH:mm:ss) y tz (America/New_York)
+ */
+function parseWhenToNYLocal(whenText) {
+  const tz = "America/New_York";
+  const w = (whenText || "").toLowerCase().trim();
+  if (!w) throw new Error('Falta fecha/hora. Ej: "mañana 9pm"');
+
+  // base = "hoy" en NY
+  let base = DateTime.now().setZone(tz);
+
+  // fecha explícita YYYY-MM-DD
+  const explicitDate = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!explicitDate) {
+    if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
+      base = base.plus({ days: 1 });
+    }
+  }
+
+  // hora (3pm, 3:30pm, 15:00)
+  const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) {
+    throw new Error('No pude leer la hora. Ej: "mañana 9pm" o "2026-02-23 15:00"');
+  }
+
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2] || "0", 10);
+  const ampm = (m[3] || "").toLowerCase();
+
+  if (ampm === "pm" && hh < 12) hh += 12;
+  if (ampm === "am" && hh === 12) hh = 0;
+
+  let dt;
+  if (explicitDate) {
+    const [, Y, M, D] = explicitDate;
+    dt = DateTime.fromObject(
+      { year: Number(Y), month: Number(M), day: Number(D), hour: hh, minute: mm, second: 0 },
+      { zone: tz }
+    );
+  } else {
+    dt = base.set({ hour: hh, minute: mm, second: 0, millisecond: 0 });
+  }
+
+  if (!dt.isValid) throw new Error("Fecha/hora inválida.");
+  return { tz, localISO: dt.toISO({ suppressMilliseconds: true }) };
+}
+
+function addMinutesNY(localISO, minutes) {
+  const tz = "America/New_York";
+  const dt = DateTime.fromISO(localISO, { zone: tz });
+  const end = dt.plus({ minutes: Number.isFinite(minutes) ? minutes : 60 });
+  return end.toISO({ suppressMilliseconds: true });
+}
+
+function prettyNY(localISO) {
+  const tz = "America/New_York";
+  const dt = DateTime.fromISO(localISO, { zone: tz });
+  // Ej: "Wed – Mar 6 – 5:00 PM"
+  return dt.toFormat("ccc '–' LLL d '–' h:mm a");
 }
 
 /* =========================
@@ -166,29 +167,18 @@ async function getOwnerGoogleAuthOrThrow() {
 ROUTES
 ========================= */
 app.get("/", (req, res) => res.status(200).send("Muëcy Ops is running ✅"));
-app.get("/health", (req, res) =>
-  res.status(200).json({ ok: true, service: "muecy-ops" })
-);
+app.get("/health", (req, res) => res.status(200).json({ ok: true, service: "muecy-ops" }));
 
 /* -------------------------
 GOOGLE OAUTH
 ------------------------- */
 app.get("/auth/google", async (req, res) => {
-  // NOTE: redirect_uri is typically configured inside getOAuthClient()
   const oauth2 = getOAuthClient();
-
-  // Optional: small state to help debugging
-  const state = Buffer.from(
-    JSON.stringify({ ts: Date.now(), from: "muecy-ops" })
-  ).toString("base64url");
-
   const url = oauth2.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: SCOPES,
-    state,
   });
-
   return res.redirect(url);
 });
 
@@ -226,7 +216,7 @@ app.get("/api/calendar/list", async (req, res) => {
     const { google, auth } = await getOwnerGoogleAuthOrThrow();
     const calendar = google.calendar({ version: "v3", auth });
 
-    const now = DateTime.utc().toISO(); // RFC3339
+    const now = new Date().toISOString();
     const out = await calendar.events.list({
       calendarId: "primary",
       timeMin: now,
@@ -295,7 +285,16 @@ app.post("/telegram/webhook", async (req, res) => {
       await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
       await telegramSend(
         chatId,
-        "Comandos: top | hoy | /calendar | tarea: ... | done: 1 | event: ... "
+        [
+          "Comandos:",
+          "• tarea: cortar fillers cocina",
+          "• top",
+          "• done: 1   (o done: texto)",
+          "• /calendar",
+          "",
+          "Evento:",
+          "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / addr: 123 Main St / desc: medir cocina / task: enviar estimate",
+        ].join("\n")
       );
       return;
     }
@@ -318,7 +317,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: 123 ... / desc: ... / task: ...
+    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: ... / desc: ... / task: ...
     if (lower.startsWith("event:") || lower.startsWith("/event")) {
       try {
         const rawEvent = msg.replace(/^\s*\/?event\s*:?\s*/i, "").trim();
@@ -334,10 +333,11 @@ app.post("/telegram/webhook", async (req, res) => {
         const title = parts[0] || "Evento Muëcy Ops";
         const whenText = parts[1] || "";
         const minutes = parseInt(parts[2] || "60", 10);
+
         if (!whenText) throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
 
-        const { tz, local } = parseWhenToNYLocal(whenText);
-        const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
+        const { tz, localISO } = parseWhenToNYLocal(whenText);
+        const endISO = addMinutesNY(localISO, Number.isFinite(minutes) ? minutes : 60);
 
         const finalLocation =
           location && address ? `${location}\n${address}` : location || address || null;
@@ -349,8 +349,8 @@ app.post("/telegram/webhook", async (req, res) => {
           calendarId: "primary",
           requestBody: {
             summary: title,
-            start: { dateTime: local, timeZone: tz },
-            end: { dateTime: endLocal, timeZone: tz },
+            start: { dateTime: localISO, timeZone: tz },
+            end: { dateTime: endISO, timeZone: tz },
             ...(finalLocation ? { location: finalLocation } : {}),
             ...(description ? { description } : {}),
           },
@@ -373,14 +373,10 @@ app.post("/telegram/webhook", async (req, res) => {
         const calendarLink = result?.data?.htmlLink || "";
         const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
 
-        // Pretty date in NY (Luxon-safe)
-        const prettyDate = DateTime.fromFormat(local, "yyyy-LL-dd'T'HH:mm:ss", { zone: TZ })
-          .toFormat("ccc – LLL d, h:mm a");
-
         const lines = [
           "✅ Evento creado:",
           title,
-          `🕒 ${prettyDate}`,
+          `🕒 ${prettyNY(localISO)} (NY)`,
           finalLocation ? `📍 ${finalLocation}` : null,
           description ? `📝 ${description}` : null,
           prettyLink,
@@ -423,7 +419,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // top (SIN UUID; mostramos índice 1..N fácil)
+    // top (mostramos índice 1..N fácil)
     if (lower === "top") {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -564,11 +560,9 @@ cron.schedule(
         take: 10,
       });
 
-      const prettyDate = DateTime.now().setZone(TZ).toFormat("cccc, LLL d, yyyy");
-
       const lines = [
         "🧠 MUËCY OPS — Briefing",
-        `📅 ${prettyDate}`,
+        `📅 ${DateTime.now().setZone("America/New_York").toFormat("cccc, LLL d, yyyy")}`,
         "",
         "🔴 Top tareas:",
         ...tasks.map((t, i) => `${i + 1}) [P${t.priority}] ${t.title}`),
@@ -585,18 +579,14 @@ cron.schedule(
       console.error("Briefing error:", e);
     }
   },
-  { timezone: TZ }
+  { timezone: "America/New_York" }
 );
 
 /* =========================
 ERROR HANDLERS
 ========================= */
-process.on("unhandledRejection", (err) =>
-  console.error("UnhandledRejection:", err)
-);
-process.on("uncaughtException", (err) =>
-  console.error("UncaughtException:", err)
-);
+process.on("unhandledRejection", (err) => console.error("UnhandledRejection:", err));
+process.on("uncaughtException", (err) => console.error("UncaughtException:", err));
 
 /* =========================
 START SERVER
