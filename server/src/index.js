@@ -367,18 +367,6 @@ const lines = [
   `🕒 ${prettyDate}`,
   location ? `📍 ${location}` : null,
   description ? `📝 ${description}` : null,
-  prettyLink,
-  linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
-].filter(Boolean);
-
-await bot.sendMessage(chatId, lines.join("\n"));
-
-const lines = [
-  "✅ Evento creado:",
-  title,
-  `🕒 ${prettyDate}`,
-  location ? `📍 ${location}` : null,
-  description ? `📝 ${description}` : null,
   result?.data?.htmlLink || null,
   linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
 ].filter(Boolean);
