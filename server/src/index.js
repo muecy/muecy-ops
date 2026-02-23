@@ -321,6 +321,10 @@ app.post("/telegram/webhook", async (req, res) => {
 
         const { google, auth } = await getOwnerGoogleAuthOrThrow();
         const calendar = google.calendar({ version: "v3", auth });
+        const finalLocation =
+  location && address
+    ? `${location}\n${address}`
+    : location || address || null;
 
         const result = await calendar.events.insert({
           calendarId: "primary",
