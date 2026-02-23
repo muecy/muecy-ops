@@ -328,7 +328,10 @@ app.post("/telegram/webhook", async (req, res) => {
             summary: title,
             start: { dateTime: local, timeZone: tz },
             end: { dateTime: endLocal, timeZone: tz },
-            ...(location ? { location } : {}),
+            const finalLocation =
+            location && address
+            ? `${location}\n${address}`
+            : location || address || null;
             ...(description ? { description } : {}),
           },
         });
