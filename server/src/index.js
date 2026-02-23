@@ -94,7 +94,7 @@ function addMinutesToLocal(local, minutes) {
 }
 
 function pickField(str, key) {
-  // key: loc | desc | invite | task
+  // key: loc | addr | desc | invite | task
   const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
   const m = str.match(re);
   return m ? m[1].trim() : "";
@@ -103,6 +103,7 @@ function pickField(str, key) {
 function stripFields(str) {
   return str
     .replace(/\bloc\s*:\s*[^/]+/gi, "")
+    .replace(/\baddr\s*:\s*[^/]+/gi, "")
     .replace(/\bdesc\s*:\s*[^/]+/gi, "")
     .replace(/\binvite\s*:\s*[^/]+/gi, "")
     .replace(/\btask\s*:\s*[^/]+/gi, "")
@@ -298,15 +299,15 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // event: titulo / mañana 9pm / 60 / loc: Miami / desc: ... / task: ...
+    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: 123 ... / desc: ... / task: ...
     if (lower.startsWith("event:") || lower.startsWith("/event")) {
       try {
         const rawEvent = msg.replace(/^\s*\/?event\s*:?\s*/i, "").trim();
 
         const location = pickField(rawEvent, "loc");
+        const address = pickField(rawEvent, "addr");
         const description = pickField(rawEvent, "desc");
         const taskRaw = pickField(rawEvent, "task");
-        const address = pickField(rawEvent, "addr");
 
         const cleaned = stripFields(rawEvent);
         const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
@@ -319,12 +320,13 @@ app.post("/telegram/webhook", async (req, res) => {
         const { tz, local } = parseWhenToNYLocal(whenText);
         const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
 
+        const finalLocation =
+          location && address
+            ? `${location}\n${address}`
+            : location || address || null;
+
         const { google, auth } = await getOwnerGoogleAuthOrThrow();
         const calendar = google.calendar({ version: "v3", auth });
-        const finalLocation =
-  location && address
-    ? `${location}\n${address}`
-    : location || address || null;
 
         const result = await calendar.events.insert({
           calendarId: "primary",
@@ -332,10 +334,7 @@ app.post("/telegram/webhook", async (req, res) => {
             summary: title,
             start: { dateTime: local, timeZone: tz },
             end: { dateTime: endLocal, timeZone: tz },
-            const finalLocation =
-            location && address
-            ? `${location}\n${address}`
-            : location || address || null;
+            ...(finalLocation ? { location: finalLocation } : {}),
             ...(description ? { description } : {}),
           },
         });
@@ -354,30 +353,32 @@ app.post("/telegram/webhook", async (req, res) => {
           });
         }
 
-        // ✅ Link limpio (sin URL fea)
-const calendarLink = result?.data?.htmlLink || "";
-const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
+        // Link limpio
+        const calendarLink = result?.data?.htmlLink || "";
+        const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
 
-// ✅ Fecha bonita (B) — funciona aunque sea dentro de 3 semanas
-const prettyDate = new Date(local).toLocaleString("en-US", {
-  weekday: "short",
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  hour12: true,
-  timeZone: tz,
-}).replace(",", " –");
+        // Fecha bonita (sirve para mañana o dentro de 3 semanas)
+        const prettyDate = new Date(local)
+          .toLocaleString("en-US", {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            hour12: true,
+            timeZone: tz,
+          })
+          .replace(",", " –");
 
-const lines = [
-  "✅ Evento creado:",
-  title,
-  `🕒 ${prettyDate}`,
-  location ? `📍 ${location}` : null,
-  description ? `📝 ${description}` : null,
-  result?.data?.htmlLink || null,
-  linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
-].filter(Boolean);
+        const lines = [
+          "✅ Evento creado:",
+          title,
+          `🕒 ${prettyDate}`,
+          finalLocation ? `📍 ${finalLocation}` : null,
+          description ? `📝 ${description}` : null,
+          prettyLink,
+          linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
+        ].filter(Boolean);
 
         await telegramSend(chatId, lines.join("\n"));
       } catch (e) {
@@ -526,7 +527,7 @@ const lines = [
         "• /calendar",
         "",
         "Evento:",
-        "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / desc: medir cocina / task: enviar estimate",
+        "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / addr: 123 Main St / desc: medir cocina / task: enviar estimate",
       ].join("\n")
     );
   } catch (e) {
