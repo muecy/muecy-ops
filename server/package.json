@@ -5,6 +5,7 @@
     "start": "node src/index.js",
     "prisma:gen": "prisma generate",
     "db:push": "prisma db push"
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
