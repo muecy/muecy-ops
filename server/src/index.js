@@ -346,15 +346,25 @@ app.post("/telegram/webhook", async (req, res) => {
           });
         }
 
-        const lines = [
-          "✅ Evento creado:",
-          title,
-          `🕒 ${local} (${tz})`,
-          location ? `📍 ${location}` : null,
-          description ? `📝 ${description}` : null,
-          result?.data?.htmlLink || null,
-          linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
-        ].filter(Boolean);
+        const prettyDate = new Date(local).toLocaleString("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: tz,
+}).replace(",", " –");
+
+const lines = [
+  "✅ Evento creado:",
+  title,
+  `🕒 ${prettyDate}`,
+  location ? `📍 ${location}` : null,
+  description ? `📝 ${description}` : null,
+  result?.data?.htmlLink || null,
+  linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
+].filter(Boolean);
 
         await telegramSend(chatId, lines.join("\n"));
       } catch (e) {
