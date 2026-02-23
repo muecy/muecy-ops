@@ -18,10 +18,7 @@ UTILS
 ========================= */
 function getBaseUrl(req) {
   // Prefer APP_BASE_URL (Railway) but fallback to request host
-  return (
-    process.env.APP_BASE_URL ||
-    `${req.protocol}://${req.get("host")}`
-  );
+  return process.env.APP_BASE_URL || `${req.protocol}://${req.get("host")}`;
 }
 
 async function telegramSend(chatId, text) {
@@ -61,7 +58,9 @@ ROUTES
 ========================= */
 // Health / Root
 app.get("/", (req, res) => res.status(200).send("Muëcy Ops is running ✅"));
-app.get("/health", (req, res) => res.status(200).json({ ok: true, service: "muecy-ops" }));
+app.get("/health", (req, res) =>
+  res.status(200).json({ ok: true, service: "muecy-ops" })
+);
 
 /* -------------------------
 GOOGLE OAUTH
@@ -176,96 +175,119 @@ app.post("/telegram/webhook", async (req, res) => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return res.sendStatus(200);
 
-    const message = req.body?.message?.text?.trim();
+    const raw = req.body?.message?.text;
     const chatId = req.body?.message?.chat?.id;
 
+    // Telegram expects fast 200
     res.sendStatus(200);
     if (!chatId) return;
 
-    const telegramSend = async (text) => {
-      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text })
-      });
-    };
+    const msg = (raw || "").trim();
+    const lower = msg.toLowerCase();
 
-    if (message === "/start") {
-      await telegramSend("Muëcy Ops conectado en Railway ✅");
-      await telegramSend("Comandos: top | hoy | /calendar | tarea: ... | done: ...");
+    // /start
+    if (msg === "/start") {
+      await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
+      await telegramSend(
+        chatId,
+        "Comandos: top | hoy | /calendar | tarea: ... | done: ..."
+      );
       return;
     }
-    if (message && message.toLowerCase() === "top") {
 
-  const tasks = await prisma.task.findMany({
-    where: {
-      status: { in: ["PENDING", "DOING", "BLOCKED"] }
-    },
-    orderBy: [
-      { priority: "asc" },
-      { createdAt: "asc" }
-    ],
-    take: 10
-  });
+    // /calendar -> llama tu API interna
+    if (msg === "/calendar") {
+      const base = getBaseUrl(req);
+      const r = await fetch(`${base}/api/calendar/list`);
+      const data = await r.json().catch(() => ({}));
 
-  if (!tasks.length) {
-    await telegramSend(chatId, "No hay tareas.");
-    return;
-  }
+      const lines = (data.events || []).map(
+        (e) => `• ${e.summary || "(sin título)"} — ${e.start || ""}`
+      );
+      await telegramSend(chatId, lines.join("\n") || "No hay eventos próximos.");
+      return;
+    }
 
-  const out = [
-    "🔴 Top 10 tareas:",
-    ...tasks.map(t => `- [${t.priority}] ${t.title}`)
-  ].join("\n");
+    // tarea: ...
+    if (lower.startsWith("tarea:")) {
+      const title = msg.slice("tarea:".length).trim();
 
-  await telegramSend(chatId, out);
-  return;
-}
-   if (message?.toLowerCase().startsWith("tarea:")) {
-  const title = message.slice("tarea:".length).trim();
+      if (!title) {
+        await telegramSend(chatId, "⚠️ Escribe algo después de 'tarea:'");
+        return;
+      }
 
-  if (!title) {
-    await telegramSend(chatId, "⚠️ Escribe algo después de 'tarea:'");
-    return;
-  }
+      if (!owner?.id) owner = await ensureOwner();
 
-  if (!owner?.id) owner = await ensureOwner();
+      await prisma.task.create({
+        data: {
+          title,
+          status: "PENDING",
+          priority: 2,
+          userId: owner.id,
+        },
+      });
 
-  await prisma.task.create({
-    data: {
-      title,
-      status: "PENDING",
-      priority: 2,
-      userId: owner.id,
-    },
-  });
+      await telegramSend(chatId, `✅ Tarea creada: ${title}`);
+      return;
+    }
 
-  await telegramSend(chatId, `✅ Tarea creada: ${title}`);
-  return;
-}
-if (message && message.toLowerCase() === "top") {
-  if (!owner?.id) owner = await ensureOwner();
+    // done: 3
+    if (lower.startsWith("done:")) {
+      const idText = msg.slice("done:".length).trim();
+      const id = Number(idText);
 
-  const tasks = await prisma.task.findMany({
-    where: { userId: owner.id, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
-    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
-    take: 10,
-  });
+      if (!id) {
+        await telegramSend(chatId, "⚠️ Usa: done: ID");
+        return;
+      }
 
-  if (!tasks.length) {
-    await telegramSend(chatId, "No hay tareas.");
-    return;
-  }
+      const updated = await prisma.task
+        .update({
+          where: { id },
+          data: { status: "DONE" },
+        })
+        .catch(() => null);
 
-  const out = [
-    "🔴 Top 10 tareas:",
-    ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
-  ].join("\n");
+      await telegramSend(
+        chatId,
+        updated ? `✅ Tarea ${id} completada` : `❌ No encontré la tarea ${id}`
+      );
+      return;
+    }
 
-  await telegramSend(chatId, out);
-  return;
-}
+    // top
+    if (lower === "top") {
+      if (!owner?.id) owner = await ensureOwner();
 
+      const tasks = await prisma.task.findMany({
+        where: {
+          userId: owner.id,
+          status: { in: ["PENDING", "DOING", "BLOCKED"] },
+        },
+        orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+        take: 10,
+      });
+
+      if (!tasks.length) {
+        await telegramSend(chatId, "No hay tareas.");
+        return;
+      }
+
+      const out = [
+        "🔴 Top 10 tareas:",
+        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+      ].join("\n");
+
+      await telegramSend(chatId, out);
+      return;
+    }
+
+    // hoy (placeholder simple)
+    if (lower === "hoy") {
+      await telegramSend(chatId, "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)");
+      return;
+    }
   } catch (e) {
     console.error("Telegram webhook error:", e);
   }
@@ -286,6 +308,7 @@ cron.schedule(
       // 2) Fetch top tasks
       const tasks = await prisma.task.findMany({
         where: {
+          userId: owner.id,
           status: { in: ["PENDING", "DOING", "BLOCKED"] },
         },
         orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
@@ -323,8 +346,12 @@ cron.schedule(
 /* =========================
 ERROR HANDLERS
 ========================= */
-process.on("unhandledRejection", (err) => console.error("UnhandledRejection:", err));
-process.on("uncaughtException", (err) => console.error("UncaughtException:", err));
+process.on("unhandledRejection", (err) =>
+  console.error("UnhandledRejection:", err)
+);
+process.on("uncaughtException", (err) =>
+  console.error("UncaughtException:", err)
+);
 
 /* =========================
 START SERVER
