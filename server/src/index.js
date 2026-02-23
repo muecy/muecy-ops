@@ -232,7 +232,32 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await telegramSend(`✅ Tarea ${id} completada`);
       return;
-    }
+    if (message?.toLowerCase() === "top") {
+
+    const tasks = await prisma.task.findMany({
+    where: {
+      status: { in: ["PENDING", "DOING", "BLOCKED"] }
+    },
+    orderBy: [
+      { priority: "asc" },
+      { createdAt: "asc" }
+    ],
+    take: 10
+  });
+
+  if (!tasks.length) {
+    await telegramSend(chatId, "No hay tareas.");
+    return;
+  }
+
+  const out = [
+    "🔴 Top 10 tareas:",
+    ...tasks.map(t => `- [${t.priority}] ${t.title}`)
+  ].join("\n");
+
+  await telegramSend(chatId, out);
+  return;
+}  }
 
   } catch (e) {
     console.error("Telegram webhook error:", e);
