@@ -232,16 +232,15 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await prisma.task.create({
         data: {
-   if (message && message.toLowerCase() === "top") {
+   // ... termina tarea aquí (con su return y cierre)
+
+if (message && message.toLowerCase() === "top") {
+  if (!owner?.id) owner = await ensureOwner();
+
   const tasks = await prisma.task.findMany({
-    where: {
-      status: { in: ["PENDING", "DOING", "BLOCKED"] }
-    },
-    orderBy: [
-      { priority: "asc" },
-      { createdAt: "asc" }
-    ],
-    take: 10
+    where: { userId: owner.id, status: { in: ["PENDING", "DOING", "BLOCKED"] } },
+    orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+    take: 10,
   });
 
   if (!tasks.length) {
@@ -251,28 +250,12 @@ app.post("/telegram/webhook", async (req, res) => {
 
   const out = [
     "🔴 Top 10 tareas:",
-    ...tasks.map(t => `- [P${t.priority}] ${t.title}`)
+    ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
   ].join("\n");
 
   await telegramSend(chatId, out);
   return;
-} 
-    take: 10
-  });
-
-  if (!tasks.length) {
-    await telegramSend(chatId, "No hay tareas.");
-    return;
-  }
-
-  const out = [
-    "🔴 Top 10 tareas:",
-    ...tasks.map(t => `- [${t.priority}] ${t.title}`)
-  ].join("\n");
-
-  await telegramSend(chatId, out);
-  return;
-}  }
+}
 
   } catch (e) {
     console.error("Telegram webhook error:", e);
