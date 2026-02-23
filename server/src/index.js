@@ -346,7 +346,12 @@ app.post("/telegram/webhook", async (req, res) => {
           });
         }
 
-        const prettyDate = new Date(local).toLocaleString("en-US", {
+        // ✅ Link limpio (sin URL fea)
+const calendarLink = result?.data?.htmlLink || "";
+const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
+
+// ✅ Fecha bonita (B) — funciona aunque sea dentro de 3 semanas
+const prettyDate = new Date(local).toLocaleString("en-US", {
   weekday: "short",
   month: "short",
   day: "numeric",
@@ -355,6 +360,18 @@ app.post("/telegram/webhook", async (req, res) => {
   hour12: true,
   timeZone: tz,
 }).replace(",", " –");
+
+const lines = [
+  "✅ Evento creado:",
+  title,
+  `🕒 ${prettyDate}`,
+  location ? `📍 ${location}` : null,
+  description ? `📝 ${description}` : null,
+  prettyLink,
+  linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
+].filter(Boolean);
+
+await bot.sendMessage(chatId, lines.join("\n"));
 
 const lines = [
   "✅ Evento creado:",
