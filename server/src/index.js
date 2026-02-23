@@ -42,16 +42,14 @@ async function telegramSend(chatId, text) {
 // Parse commands like:
 // "done: 7" | "done 7" | "Done:7" | "doing 12"
 function parseCommandWithId(msg, cmd) {
-  // Normalize spaces
   const s = (msg || "").trim();
 
-  // Matches: cmd:123 | cmd: 123 | cmd 123
-  const re = new RegExp(`^${cmd}\\s*:?\\s*(\\d+)\\s*$`, "i");
+  // acepta números o UUID
+  const re = new RegExp(`^${cmd}\\s*:?\\s*([a-zA-Z0-9-]+)\\s*$`, "i");
   const m = s.match(re);
   if (!m) return null;
-  const id = Number(m[1]);
-  if (!Number.isFinite(id) || id <= 0) return null;
-  return id;
+
+  return m[1]; // devuelve string (UUID o número)
 }
 
 /* =========================
