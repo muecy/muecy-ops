@@ -11,6 +11,10 @@ import { syncGmailToTasks } from "./jobs.js";
 APP
 ========================= */
 const app = express();
+
+// Important on Railway/Proxies so req.protocol becomes https
+app.set("trust proxy", 1);
+
 app.use(express.json({ limit: "2mb" }));
 
 /* =========================
@@ -33,6 +37,21 @@ async function telegramSend(chatId, text) {
 
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, status: r.status, data };
+}
+
+// Parse commands like:
+// "done: 7" | "done 7" | "Done:7" | "doing 12"
+function parseCommandWithId(msg, cmd) {
+  // Normalize spaces
+  const s = (msg || "").trim();
+
+  // Matches: cmd:123 | cmd: 123 | cmd 123
+  const re = new RegExp(`^${cmd}\\s*:?\\s*(\\d+)\\s*$`, "i");
+  const m = s.match(re);
+  if (!m) return null;
+  const id = Number(m[1]);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return id;
 }
 
 /* =========================
@@ -190,7 +209,7 @@ app.post("/telegram/webhook", async (req, res) => {
       await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
       await telegramSend(
         chatId,
-        "Comandos: top | hoy | /calendar | tarea: ... | done: ..."
+        "Comandos: top | hoy | /calendar | tarea: ... | done: ID | doing: ID"
       );
       return;
     }
@@ -232,26 +251,35 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // done: 3
-    if (lower.startsWith("done:")) {
-      const idText = msg.slice("done:".length).trim();
-      const id = Number(idText);
+    // done / doing with flexible formats
+    const doneId = parseCommandWithId(msg, "done");
+    if (doneId) {
+      if (!owner?.id) owner = await ensureOwner();
 
-      if (!id) {
-        await telegramSend(chatId, "⚠️ Usa: done: ID");
-        return;
-      }
-
-      const updated = await prisma.task
-        .update({
-          where: { id },
-          data: { status: "DONE" },
-        })
-        .catch(() => null);
+      const r = await prisma.task.updateMany({
+        where: { id: doneId, userId: owner.id },
+        data: { status: "DONE" },
+      });
 
       await telegramSend(
         chatId,
-        updated ? `✅ Tarea ${id} completada` : `❌ No encontré la tarea ${id}`
+        r.count ? `✅ Tarea ${doneId} completada` : `❌ No encontré la tarea ${doneId}`
+      );
+      return;
+    }
+
+    const doingId = parseCommandWithId(msg, "doing");
+    if (doingId) {
+      if (!owner?.id) owner = await ensureOwner();
+
+      const r = await prisma.task.updateMany({
+        where: { id: doingId, userId: owner.id },
+        data: { status: "DOING" },
+      });
+
+      await telegramSend(
+        chatId,
+        r.count ? `🟡 Tarea ${doingId} en progreso (DOING)` : `❌ No encontré la tarea ${doingId}`
       );
       return;
     }
@@ -276,7 +304,7 @@ app.post("/telegram/webhook", async (req, res) => {
 
       const out = [
         "🔴 Top 10 tareas:",
-        ...tasks.map(t => `- (${t.id}) [P${t.priority}] ${t.title}`)
+        ...tasks.map((t) => `- (${t.id}) [P${t.priority}] ${t.title}`),
       ].join("\n");
 
       await telegramSend(chatId, out);
@@ -285,7 +313,10 @@ app.post("/telegram/webhook", async (req, res) => {
 
     // hoy (placeholder simple)
     if (lower === "hoy") {
-      await telegramSend(chatId, "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)");
+      await telegramSend(
+        chatId,
+        "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)"
+      );
       return;
     }
   } catch (e) {
@@ -325,9 +356,9 @@ cron.schedule(
         })}`,
         "",
         "🔴 Top tareas:",
-        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+        ...tasks.map((t) => `- (${t.id}) [P${t.priority}] ${t.title}`),
         "",
-        "Comandos: top | /calendar | tarea: ... | done: ...",
+        "Comandos: top | /calendar | tarea: ... | done: ID | doing: ID",
       ].join("\n");
 
       // 3) Send Telegram (chat id fixed by env)
