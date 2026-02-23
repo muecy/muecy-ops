@@ -54,6 +54,7 @@ function parseWhenToNYLocal(whenText) {
     if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
       base.setDate(base.getDate() + 1);
     }
+    // "hoy" => same day (no changes)
   }
 
   // time: 3pm, 3:30pm, 15:00
@@ -288,7 +289,7 @@ app.post("/telegram/webhook", async (req, res) => {
       const data = await r.json().catch(() => ({}));
 
       if (!r.ok && data?.error === "not_connected") {
-        await telegramSend(chatId, "⚠️ Google no está conectado. Abre: /auth/google");
+        await telegramSend(chatId, `⚠️ Google no está conectado. Abre: ${base}/auth/google`);
         return;
       }
 
@@ -299,7 +300,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: 123 ... / desc: ... / task: ...
+    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: 123 Main / desc: ... / task: ...
     if (lower.startsWith("event:") || lower.startsWith("/event")) {
       try {
         const rawEvent = msg.replace(/^\s*\/?event\s*:?\s*/i, "").trim();
@@ -315,6 +316,7 @@ app.post("/telegram/webhook", async (req, res) => {
         const title = parts[0] || "Evento Muëcy Ops";
         const whenText = parts[1] || "";
         const minutes = parseInt(parts[2] || "60", 10);
+
         if (!whenText) throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
 
         const { tz, local } = parseWhenToNYLocal(whenText);
@@ -353,11 +355,6 @@ app.post("/telegram/webhook", async (req, res) => {
           });
         }
 
-        // Link limpio
-        const calendarLink = result?.data?.htmlLink || "";
-        const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
-
-        // Fecha bonita (sirve para mañana o dentro de 3 semanas)
         const prettyDate = new Date(local)
           .toLocaleString("en-US", {
             weekday: "short",
@@ -369,6 +366,9 @@ app.post("/telegram/webhook", async (req, res) => {
             timeZone: tz,
           })
           .replace(",", " –");
+
+        const calendarLink = result?.data?.htmlLink || "";
+        const prettyLink = calendarLink ? `🔗 Ver en Google Calendar\n${calendarLink}` : null;
 
         const lines = [
           "✅ Evento creado:",
@@ -383,7 +383,8 @@ app.post("/telegram/webhook", async (req, res) => {
         await telegramSend(chatId, lines.join("\n"));
       } catch (e) {
         if (e?.code === "not_connected") {
-          await telegramSend(chatId, "⚠️ Google no está conectado. Abre: /auth/google");
+          const base = getBaseUrl(req);
+          await telegramSend(chatId, `⚠️ Google no está conectado. Abre: ${base}/auth/google`);
           return;
         }
         await telegramSend(chatId, `❌ No pude crear el evento. Detalle: ${e.message}`);
@@ -416,7 +417,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // top (SIN UUID; mostramos índice 1..N fácil)
+    // top
     if (lower === "top") {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -445,7 +446,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // done: 1  (por índice del top)  o done: texto (por búsqueda)
+    // done: 1  o done: texto
     if (lower.startsWith("done:")) {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -455,7 +456,6 @@ app.post("/telegram/webhook", async (req, res) => {
         return;
       }
 
-      // Caso 1: done: número => Nth tarea del top
       const n = Number(payload);
       if (Number.isFinite(n) && n > 0) {
         const tasks = await prisma.task.findMany({
@@ -482,7 +482,6 @@ app.post("/telegram/webhook", async (req, res) => {
         return;
       }
 
-      // Caso 2: done: texto => match por título (primera que coincida)
       const q = payload.toLowerCase();
       const task = await prisma.task.findFirst({
         where: {
@@ -507,7 +506,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // hoy (placeholder simple)
+    // hoy (placeholder)
     if (lower === "hoy") {
       await telegramSend(chatId, "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)");
       return;
