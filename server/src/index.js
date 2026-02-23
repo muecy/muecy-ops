@@ -254,7 +254,6 @@ cron.schedule(
       // 2) Fetch top tasks
       const tasks = await prisma.task.findMany({
         where: {
-          userId: owner.id,
           status: { in: ["PENDING", "DOING", "BLOCKED"] },
         },
         orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
