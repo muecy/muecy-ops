@@ -276,7 +276,7 @@ app.post("/telegram/webhook", async (req, res) => {
 
       const out = [
         "🔴 Top 10 tareas:",
-        ...tasks.map((t) => `- [P${t.priority}] ${t.title}`),
+        ...tasks.map(t => `- (${t.id}) [P${t.priority}] ${t.title}`)
       ].join("\n");
 
       await telegramSend(chatId, out);
