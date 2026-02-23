@@ -221,19 +221,28 @@ app.post("/telegram/webhook", async (req, res) => {
   await telegramSend(chatId, out);
   return;
 }
-    if (message?.toLowerCase().startsWith("tarea:")) {
-      const title = message.slice("tarea:".length).trim();
-      if (!title) {
-        await telegramSend("⚠️ Escribe algo después de 'tarea:'");
-        return;
-      }
+   if (message?.toLowerCase().startsWith("tarea:")) {
+  const title = message.slice("tarea:".length).trim();
 
-      if (!owner?.id) owner = await ensureOwner();
+  if (!title) {
+    await telegramSend(chatId, "⚠️ Escribe algo después de 'tarea:'");
+    return;
+  }
 
-      await prisma.task.create({
-        data: {
-   // ... termina tarea aquí (con su return y cierre)
+  if (!owner?.id) owner = await ensureOwner();
 
+  await prisma.task.create({
+    data: {
+      title,
+      status: "PENDING",
+      priority: 2,
+      userId: owner.id,
+    },
+  });
+
+  await telegramSend(chatId, `✅ Tarea creada: ${title}`);
+  return;
+}
 if (message && message.toLowerCase() === "top") {
   if (!owner?.id) owner = await ensureOwner();
 
