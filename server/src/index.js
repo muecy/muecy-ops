@@ -306,6 +306,7 @@ app.post("/telegram/webhook", async (req, res) => {
         const location = pickField(rawEvent, "loc");
         const description = pickField(rawEvent, "desc");
         const taskRaw = pickField(rawEvent, "task");
+        const address = pickField(rawEvent, "addr");
 
         const cleaned = stripFields(rawEvent);
         const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
