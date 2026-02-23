@@ -176,7 +176,7 @@ app.post("/telegram/webhook", async (req, res) => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return res.sendStatus(200);
 
-    const message = req.body?.message?.text;
+    const message = req.body?.message?.text?.trim();
     const chatId = req.body?.message?.chat?.id;
 
     res.sendStatus(200);
@@ -232,7 +232,7 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await telegramSend(`✅ Tarea ${id} completada`);
       return;
-    if (message?.toLowerCase() === "top") {
+    if (message && message.toLowerCase() === "top") {
 
     const tasks = await prisma.task.findMany({
     where: {
