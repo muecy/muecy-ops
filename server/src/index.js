@@ -244,13 +244,24 @@ if (message?.toLowerCase().startsWith("tarea:")) {
   return;
 }
 
-    // Minimal: mark done via "done: <id>"
-    if (message?.toLowerCase().startsWith("done:")) {
-      const id = message.slice("done:".length).trim();
-      if (!id) {
-        await telegramSend(chatId, "Escribe: done: <taskId>");
-        return;
-      }
+    // Minimal: mark task done via "done: 3"
+if (message?.toLowerCase().startsWith("done:")) {
+  const idText = message.slice("done:".length).trim();
+  const id = Number(idText);
+
+  if (!id) {
+    await telegramSend(chatId, "⚠️ Usa: done: ID");
+    return;
+  }
+
+  await prisma.task.update({
+    where: { id },
+    data: { status: "DONE" }
+  });
+
+  await telegramSend(chatId, `✅ Tarea ${id} completada`);
+  return;
+}
 
       const updated = await prisma.task.update({
         where: { id },
