@@ -232,9 +232,9 @@ app.post("/telegram/webhook", async (req, res) => {
 
       await prisma.task.create({
         data: {
-       const msg = (message || "").trim().toLowerCase();
+    if (message && message.trim().toLowerCase() === "top") {
 
-if (msg === "top") {
+  if (msg === "top") {
   if (!owner?.id) owner = await ensureOwner();
 
   const tasks = await prisma.task.findMany({
