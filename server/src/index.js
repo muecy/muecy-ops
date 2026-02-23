@@ -11,10 +11,6 @@ import { syncGmailToTasks } from "./jobs.js";
 APP
 ========================= */
 const app = express();
-
-// Important on Railway/Proxies so req.protocol becomes https
-app.set("trust proxy", 1);
-
 app.use(express.json({ limit: "2mb" }));
 
 /* =========================
@@ -39,17 +35,78 @@ async function telegramSend(chatId, text) {
   return { ok: r.ok, status: r.status, data };
 }
 
-// Parse commands like:
-// "done: 7" | "done 7" | "Done:7" | "doing 12"
-function parseCommandWithId(msg, cmd) {
-  const s = (msg || "").trim();
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
 
-  // acepta números o UUID
-  const re = new RegExp(`^${cmd}\\s*:?\\s*([a-zA-Z0-9-]+)\\s*$`, "i");
-  const m = s.match(re);
-  if (!m) return null;
+// "mañana 9pm", "tomorrow 10am", "2026-02-23 15:00", "15:30", "3pm"
+function parseWhenToNYLocal(whenText) {
+  const tz = "America/New_York";
 
-  return m[1]; // devuelve string (UUID o número)
+  const nowNY = new Date(new Date().toLocaleString("en-US", { timeZone: tz }));
+  const base = new Date(nowNY.getTime());
+  const w = (whenText || "").toLowerCase().trim();
+
+  // explicit date YYYY-MM-DD
+  const explicitDate = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+
+  if (!explicitDate) {
+    if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
+      base.setDate(base.getDate() + 1);
+    }
+  }
+
+  // time: 3pm, 3:30pm, 15:00
+  const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) {
+    throw new Error('No pude leer la hora. Ej: "mañana 9pm" o "2026-02-23 15:00"');
+  }
+
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2] || "0", 10);
+  const ampm = (m[3] || "").toLowerCase();
+
+  if (ampm === "pm" && hh < 12) hh += 12;
+  if (ampm === "am" && hh === 12) hh = 0;
+
+  if (explicitDate) {
+    const [, Y, M, D] = explicitDate;
+    return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
+  }
+
+  const Y = base.getFullYear();
+  const M = pad2(base.getMonth() + 1);
+  const D = pad2(base.getDate());
+  return { tz, local: `${Y}-${M}-${D}T${pad2(hh)}:${pad2(mm)}:00` };
+}
+
+function addMinutesToLocal(local, minutes) {
+  const [datePart, timePart] = local.split("T");
+  const [Y, M, D] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+
+  const dt = new Date(Y, M - 1, D, hh, mm, 0);
+  dt.setMinutes(dt.getMinutes() + minutes);
+
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(
+    dt.getHours()
+  )}:${pad2(dt.getMinutes())}:00`;
+}
+
+function pickField(str, key) {
+  // key: loc | desc | invite | task
+  const re = new RegExp(`\\b${key}\\s*:\\s*([^/]+)`, "i");
+  const m = str.match(re);
+  return m ? m[1].trim() : "";
+}
+
+function stripFields(str) {
+  return str
+    .replace(/\bloc\s*:\s*[^/]+/gi, "")
+    .replace(/\bdesc\s*:\s*[^/]+/gi, "")
+    .replace(/\binvite\s*:\s*[^/]+/gi, "")
+    .replace(/\btask\s*:\s*[^/]+/gi, "")
+    .trim();
 }
 
 /* =========================
@@ -71,9 +128,32 @@ async function boot() {
 }
 
 /* =========================
+GOOGLE HELPERS (OAuth owner)
+========================= */
+async function getOwnerGoogleAuthOrThrow() {
+  const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local";
+  const u = await prisma.user.findUnique({ where: { email: ownerEmail } });
+
+  if (!u?.accessToken) {
+    const e = new Error("not_connected");
+    e.code = "not_connected";
+    throw e;
+  }
+
+  const auth = getOAuthClient();
+  auth.setCredentials({
+    access_token: u.accessToken,
+    refresh_token: u.refreshToken || undefined,
+    expiry_date: u.tokenExpiry ? new Date(u.tokenExpiry).getTime() : undefined,
+  });
+
+  const { google } = await import("googleapis");
+  return { google, auth };
+}
+
+/* =========================
 ROUTES
 ========================= */
-// Health / Root
 app.get("/", (req, res) => res.status(200).send("Muëcy Ops is running ✅"));
 app.get("/health", (req, res) =>
   res.status(200).json({ ok: true, service: "muecy-ops" })
@@ -84,13 +164,11 @@ GOOGLE OAUTH
 ------------------------- */
 app.get("/auth/google", async (req, res) => {
   const oauth2 = getOAuthClient();
-
   const url = oauth2.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
     scope: SCOPES,
   });
-
   return res.redirect(url);
 });
 
@@ -125,25 +203,7 @@ API: Calendar (list next 10)
 ------------------------- */
 app.get("/api/calendar/list", async (req, res) => {
   try {
-    const ownerEmail = process.env.OWNER_EMAIL || "owner@muecy.local";
-    const u = await prisma.user.findUnique({ where: { email: ownerEmail } });
-
-    if (!u?.accessToken) {
-      return res.status(401).json({
-        ok: false,
-        error: "not_connected",
-        message: "Not connected to Google yet. Go to /auth/google",
-      });
-    }
-
-    const auth = getOAuthClient();
-    auth.setCredentials({
-      access_token: u.accessToken,
-      refresh_token: u.refreshToken || undefined,
-      expiry_date: u.tokenExpiry ? new Date(u.tokenExpiry).getTime() : undefined,
-    });
-
-    const { google } = await import("googleapis");
+    const { google, auth } = await getOwnerGoogleAuthOrThrow();
     const calendar = google.calendar({ version: "v3", auth });
 
     const now = new Date().toISOString();
@@ -161,10 +221,18 @@ app.get("/api/calendar/list", async (req, res) => {
       start: e.start?.dateTime || e.start?.date,
       end: e.end?.dateTime || e.end?.date,
       location: e.location || null,
+      htmlLink: e.htmlLink || null,
     }));
 
     res.json({ ok: true, count: events.length, events });
   } catch (err) {
+    if (err?.code === "not_connected") {
+      return res.status(401).json({
+        ok: false,
+        error: "not_connected",
+        message: "Not connected to Google yet. Go to /auth/google",
+      });
+    }
     console.error("Calendar fetch failed:", err);
     res.status(500).json({ ok: false, error: "calendar_failed" });
   }
@@ -207,21 +275,95 @@ app.post("/telegram/webhook", async (req, res) => {
       await telegramSend(chatId, "Muëcy Ops conectado en Railway ✅");
       await telegramSend(
         chatId,
-        "Comandos: top | hoy | /calendar | tarea: ... | done: ID | doing: ID"
+        "Comandos: top | hoy | /calendar | tarea: ... | done: 1 | event: ... "
       );
       return;
     }
 
-    // /calendar -> llama tu API interna
+    // /calendar -> tu API interna
     if (msg === "/calendar") {
       const base = getBaseUrl(req);
       const r = await fetch(`${base}/api/calendar/list`);
       const data = await r.json().catch(() => ({}));
 
+      if (!r.ok && data?.error === "not_connected") {
+        await telegramSend(chatId, "⚠️ Google no está conectado. Abre: /auth/google");
+        return;
+      }
+
       const lines = (data.events || []).map(
         (e) => `• ${e.summary || "(sin título)"} — ${e.start || ""}`
       );
       await telegramSend(chatId, lines.join("\n") || "No hay eventos próximos.");
+      return;
+    }
+
+    // event: titulo / mañana 9pm / 60 / loc: Miami / desc: ... / task: ...
+    if (lower.startsWith("event:") || lower.startsWith("/event")) {
+      try {
+        const rawEvent = msg.replace(/^\s*\/?event\s*:?\s*/i, "").trim();
+
+        const location = pickField(rawEvent, "loc");
+        const description = pickField(rawEvent, "desc");
+        const taskRaw = pickField(rawEvent, "task");
+
+        const cleaned = stripFields(rawEvent);
+        const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
+
+        const title = parts[0] || "Evento Muëcy Ops";
+        const whenText = parts[1] || "";
+        const minutes = parseInt(parts[2] || "60", 10);
+        if (!whenText) throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
+
+        const { tz, local } = parseWhenToNYLocal(whenText);
+        const endLocal = addMinutesToLocal(local, Number.isFinite(minutes) ? minutes : 60);
+
+        const { google, auth } = await getOwnerGoogleAuthOrThrow();
+        const calendar = google.calendar({ version: "v3", auth });
+
+        const result = await calendar.events.insert({
+          calendarId: "primary",
+          requestBody: {
+            summary: title,
+            start: { dateTime: local, timeZone: tz },
+            end: { dateTime: endLocal, timeZone: tz },
+            ...(location ? { location } : {}),
+            ...(description ? { description } : {}),
+          },
+        });
+
+        let linkedTask = null;
+        if (taskRaw) {
+          if (!owner?.id) owner = await ensureOwner();
+          linkedTask = await prisma.task.create({
+            data: {
+              userId: owner.id,
+              title: taskRaw,
+              priority: 2,
+              status: "PENDING",
+              source: "calendar",
+            },
+          });
+        }
+
+        const lines = [
+          "✅ Evento creado:",
+          title,
+          `🕒 ${local} (${tz})`,
+          location ? `📍 ${location}` : null,
+          description ? `📝 ${description}` : null,
+          result?.data?.htmlLink || null,
+          linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
+        ].filter(Boolean);
+
+        await telegramSend(chatId, lines.join("\n"));
+      } catch (e) {
+        if (e?.code === "not_connected") {
+          await telegramSend(chatId, "⚠️ Google no está conectado. Abre: /auth/google");
+          return;
+        }
+        await telegramSend(chatId, `❌ No pude crear el evento. Detalle: ${e.message}`);
+      }
       return;
     }
 
@@ -242,6 +384,7 @@ app.post("/telegram/webhook", async (req, res) => {
           status: "PENDING",
           priority: 2,
           userId: owner.id,
+          source: "manual",
         },
       });
 
@@ -249,40 +392,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // done / doing with flexible formats
-    const doneId = parseCommandWithId(msg, "done");
-    if (doneId) {
-      if (!owner?.id) owner = await ensureOwner();
-
-      const r = await prisma.task.updateMany({
-        where: { id: doneId, userId: owner.id },
-        data: { status: "DONE" },
-      });
-
-      await telegramSend(
-        chatId,
-        r.count ? `✅ Tarea ${doneId} completada` : `❌ No encontré la tarea ${doneId}`
-      );
-      return;
-    }
-
-    const doingId = parseCommandWithId(msg, "doing");
-    if (doingId) {
-      if (!owner?.id) owner = await ensureOwner();
-
-      const r = await prisma.task.updateMany({
-        where: { id: doingId, userId: owner.id },
-        data: { status: "DOING" },
-      });
-
-      await telegramSend(
-        chatId,
-        r.count ? `🟡 Tarea ${doingId} en progreso (DOING)` : `❌ No encontré la tarea ${doingId}`
-      );
-      return;
-    }
-
-    // top
+    // top (SIN UUID; mostramos índice 1..N fácil)
     if (lower === "top") {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -302,21 +412,100 @@ app.post("/telegram/webhook", async (req, res) => {
 
       const out = [
         "🔴 Top 10 tareas:",
-        ...tasks.map((t) => `- (${t.id}) [P${t.priority}] ${t.title}`),
+        ...tasks.map((t, i) => `${i + 1}) [P${t.priority}] ${t.title}`),
+        "",
+        "✅ Para completar: done: 1 (o done: texto)",
       ].join("\n");
 
       await telegramSend(chatId, out);
       return;
     }
 
-    // hoy (placeholder simple)
-    if (lower === "hoy") {
-      await telegramSend(
-        chatId,
-        "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)"
-      );
+    // done: 1  (por índice del top)  o done: texto (por búsqueda)
+    if (lower.startsWith("done:")) {
+      if (!owner?.id) owner = await ensureOwner();
+
+      const payload = msg.slice("done:".length).trim();
+      if (!payload) {
+        await telegramSend(chatId, "⚠️ Usa: done: 1  (o done: texto)");
+        return;
+      }
+
+      // Caso 1: done: número => Nth tarea del top
+      const n = Number(payload);
+      if (Number.isFinite(n) && n > 0) {
+        const tasks = await prisma.task.findMany({
+          where: {
+            userId: owner.id,
+            status: { in: ["PENDING", "DOING", "BLOCKED"] },
+          },
+          orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+          take: 10,
+        });
+
+        const picked = tasks[n - 1];
+        if (!picked) {
+          await telegramSend(chatId, `❌ No existe la tarea #${n} en el top actual.`);
+          return;
+        }
+
+        await prisma.task.update({
+          where: { id: picked.id },
+          data: { status: "DONE" },
+        });
+
+        await telegramSend(chatId, `✅ DONE: ${picked.title}`);
+        return;
+      }
+
+      // Caso 2: done: texto => match por título (primera que coincida)
+      const q = payload.toLowerCase();
+      const task = await prisma.task.findFirst({
+        where: {
+          userId: owner.id,
+          status: { in: ["PENDING", "DOING", "BLOCKED"] },
+          title: { contains: q, mode: "insensitive" },
+        },
+        orderBy: { createdAt: "asc" },
+      });
+
+      if (!task) {
+        await telegramSend(chatId, `❌ No encontré tarea que coincida con: "${payload}"`);
+        return;
+      }
+
+      await prisma.task.update({
+        where: { id: task.id },
+        data: { status: "DONE" },
+      });
+
+      await telegramSend(chatId, `✅ DONE: ${task.title}`);
       return;
     }
+
+    // hoy (placeholder simple)
+    if (lower === "hoy") {
+      await telegramSend(chatId, "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)");
+      return;
+    }
+
+    // fallback help
+    await telegramSend(
+      chatId,
+      [
+        "Muëcy Ops 🤖",
+        "",
+        "Comandos:",
+        "• tarea: cortar fillers cocina",
+        "• top",
+        "• done: 1",
+        "• done: fillers",
+        "• /calendar",
+        "",
+        "Evento:",
+        "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / desc: medir cocina / task: enviar estimate",
+      ].join("\n")
+    );
   } catch (e) {
     console.error("Telegram webhook error:", e);
   }
@@ -354,12 +543,11 @@ cron.schedule(
         })}`,
         "",
         "🔴 Top tareas:",
-        ...tasks.map((t) => `- (${t.id}) [P${t.priority}] ${t.title}`),
+        ...tasks.map((t, i) => `${i + 1}) [P${t.priority}] ${t.title}`),
         "",
-        "Comandos: top | /calendar | tarea: ... | done: ID | doing: ID",
+        "Comandos: top | /calendar | tarea: ... | done: 1 | event: ...",
       ].join("\n");
 
-      // 3) Send Telegram (chat id fixed by env)
       if (process.env.TELEGRAM_CHAT_ID) {
         await telegramSend(process.env.TELEGRAM_CHAT_ID, lines);
       } else {
