@@ -62,19 +62,8 @@ function stripFields(str) {
 function isExplicitDate(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test((s || "").trim());
 }
-
 function isMinutes(s) {
   return /^\d{1,4}$/.test((s || "").trim());
-}
-
-function isTimeToken(s) {
-  const t = (s || "").trim().toLowerCase();
-  // Acepta: 3pm, 3:30pm, 15:00, 15:00pm (no recomendado pero tolerado)
-  // Importante: no confundir "2026-03-03" con hora.
-  return (
-    /^\d{1,2}:\d{2}\s*(am|pm)?$/.test(t) ||
-    /^\d{1,2}\s*(am|pm)$/.test(t)
-  );
 }
 
 /**
@@ -91,7 +80,7 @@ function parseWhenToNYLocal(whenText) {
   // base = "hoy" en NY
   let base = DateTime.now().setZone(tz);
 
-  // detectar fecha explícita YYYY-MM-DD (en cualquier parte)
+  // detectar fecha explícita YYYY-MM-DD
   const explicitDateMatch = w.match(/(\d{4})-(\d{2})-(\d{2})/);
   const hasExplicitDate = Boolean(explicitDateMatch);
 
@@ -101,10 +90,9 @@ function parseWhenToNYLocal(whenText) {
     }
   }
 
-  // Extraer hora de forma SEGURA:
-  // 1) Preferimos tokens con ":" (15:00 / 3:30pm)
-  // 2) o tokens con am/pm (3pm / 10am)
-  // Evitamos capturar el año "2026" como hora.
+  // Extraer hora de forma segura:
+  // Preferimos HH:MM (con o sin am/pm), o H am/pm.
+  // Evita confundir "2026" con hora.
   let timeMatch =
     w.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
     w.match(/\b(\d{1,2})\s*(am|pm)\b/i);
@@ -118,20 +106,16 @@ function parseWhenToNYLocal(whenText) {
   let ampm = "";
 
   if (timeMatch.length >= 4 && timeMatch[0].includes(":")) {
-    // formato HH:MM [am/pm]
     hh = parseInt(timeMatch[1], 10);
     mm = parseInt(timeMatch[2], 10);
     ampm = (timeMatch[3] || "").toLowerCase();
   } else {
-    // formato H am/pm
     hh = parseInt(timeMatch[1], 10);
     mm = 0;
     ampm = (timeMatch[2] || "").toLowerCase();
   }
 
-  if (Number.isNaN(hh) || Number.isNaN(mm)) {
-    throw new Error("Hora inválida.");
-  }
+  if (Number.isNaN(hh) || Number.isNaN(mm)) throw new Error("Hora inválida.");
 
   if (ampm === "pm" && hh < 12) hh += 12;
   if (ampm === "am" && hh === 12) hh = 0;
@@ -156,9 +140,6 @@ function parseWhenToNYLocal(whenText) {
   }
 
   if (!dt.isValid) throw new Error("Fecha/hora inválida.");
-
-  // IMPORTANTE:
-  // toISO aquí devuelve con offset (ej -05:00 / -04:00), y además enviamos timeZone al Calendar.
   return { tz, localISO: dt.toISO({ suppressMilliseconds: true }) };
 }
 
@@ -172,59 +153,82 @@ function addMinutesNY(localISO, minutes) {
 function prettyNY(localISO) {
   const tz = "America/New_York";
   const dt = DateTime.fromISO(localISO, { zone: tz });
-  // Ej: "Wed – Mar 6 – 5:00 PM"
   return dt.toFormat("ccc '–' LLL d '–' h:mm a");
 }
 
 /**
- * Interpreta el input del usuario en Telegram para EVENTOS
+ * Parser de partes para eventos:
  * Soporta:
- *  - title / mañana 9pm / 60
- *  - title / 2026-03-03 13:00 / 60
- *  - title / 13:00 / 2026-03-03 / Miami
- *  - title / 2026-03-03 / 13:00 / 60 / Miami
+ * - title / mañana 9pm / 60
+ * - title / 2026-03-03 13:00 / 60
+ * - title / 13:00 / 2026-03-03 / Miami
+ * - title / 2026-03-03 / 13:00 / 60 / Miami
+ * - title / 2026-03-03-15:00 / Miami
  */
 function parseEventParts(parts) {
-  // parts ya viene sin campos loc/addr/desc/task y split por "/"
-  const title = parts[0] || "Evento Muëcy Ops";
-  const rest = parts.slice(1);
+  const all = parts.map((x) => (x || "").trim()).filter(Boolean);
 
-  let minutes = 60;
   let dateToken = "";
   let timeToken = "";
+  let minutes = 60;
   let leftoverLocation = "";
+
+  const extractDate = (s) => {
+    const m = (s || "").match(/(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : "";
+  };
+
+  const extractTime = (s) => {
+    const t = (s || "").toLowerCase();
+    const m =
+      t.match(/(\d{1,2}:\d{2})\s*(am|pm)?/) ||
+      t.match(/\b(\d{1,2})\s*(am|pm)\b/);
+    if (!m) return "";
+    return m[0].replace(/\s+/g, "");
+  };
+
+  const title = all[0] || "Evento Muëcy Ops";
+  const rest = all.slice(1);
+
+  // por si el título trae fecha/hora pegada
+  dateToken = extractDate(title) || dateToken;
+  timeToken = extractTime(title) || timeToken;
 
   for (const tokenRaw of rest) {
     const token = (tokenRaw || "").trim();
     if (!token) continue;
 
-    if (!dateToken && isExplicitDate(token)) {
-      dateToken = token;
-      continue;
+    if (!dateToken) {
+      const d = extractDate(token);
+      if (d) {
+        dateToken = d;
+        continue;
+      }
     }
-    if (!timeToken && isTimeToken(token)) {
-      timeToken = token;
-      continue;
+
+    if (!timeToken) {
+      const t = extractTime(token);
+      if (t) {
+        timeToken = t;
+        continue;
+      }
     }
+
     if (isMinutes(token)) {
       const n = parseInt(token, 10);
-      // si es algo tipo "2026" no debe tomarse como minutos, pero isMinutes lo acepta.
-      // Entonces: solo aceptamos minutos razonables (1..1440)
       if (Number.isFinite(n) && n >= 1 && n <= 1440) {
         minutes = n;
         continue;
       }
     }
 
-    // si no encaja en nada, lo consideramos "posible location" si no usaron loc:
     if (!leftoverLocation) leftoverLocation = token;
   }
 
-  // construir whenText
   let whenText = "";
   if (dateToken && timeToken) whenText = `${dateToken} ${timeToken}`;
   else if (timeToken) whenText = timeToken;
-  else if (dateToken) whenText = dateToken; // esto fallará luego con un mensaje claro
+  else if (dateToken) whenText = dateToken;
 
   return { title, whenText, minutes, leftoverLocation };
 }
@@ -403,6 +407,7 @@ app.post("/telegram/webhook", async (req, res) => {
           "Evento:",
           "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / addr: 123 Main St / desc: medir cocina / task: enviar estimate",
           "• event: revisar Trello / 13:00 / 2026-03-03 / Miami",
+          "• event: panel / 2026-03-03-15:00 / Miami",
         ].join("\n")
       );
       return;
@@ -426,7 +431,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // event: titulo / mañana 9pm / 60 / loc: Miami / addr: ... / desc: ... / task: ...
+    // event: ...
     if (lower.startsWith("event:") || lower.startsWith("/event")) {
       try {
         const rawEvent = msg.replace(/^\s*\/?event\s*:?\s*/i, "").trim();
@@ -441,27 +446,21 @@ app.post("/telegram/webhook", async (req, res) => {
 
         if (!parts.length) throw new Error("Formato vacío. Ej: event: Título / mañana 9pm / 60");
 
-        // ✅ Nuevo parser de partes para soportar "13:00 / 2026-03-03 / Miami"
         const parsed = parseEventParts(parts);
-
-        const title = parsed.title;
-        const minutes = parsed.minutes;
-
-        // Si no usaron loc:/addr:, tomamos "Miami" (o lo que venga) como location simple.
-        const fallbackLoc = parsed.leftoverLocation;
 
         if (!parsed.whenText) {
           throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
         }
 
-        // Si pasaron solo fecha "2026-03-03" sin hora, aquí damos error claro:
+        // Si pasaron solo fecha sin hora
         if (isExplicitDate(parsed.whenText.trim())) {
           throw new Error('Te faltó la hora. Ej: "2026-03-03 13:00" o "13:00 / 2026-03-03"');
         }
 
         const { tz, localISO } = parseWhenToNYLocal(parsed.whenText);
-        const endISO = addMinutesNY(localISO, Number.isFinite(minutes) ? minutes : 60);
+        const endISO = addMinutesNY(localISO, Number.isFinite(parsed.minutes) ? parsed.minutes : 60);
 
+        const fallbackLoc = parsed.leftoverLocation;
         const combinedLoc =
           location && address ? `${location}\n${address}` : location || address || fallbackLoc || null;
 
@@ -471,10 +470,16 @@ app.post("/telegram/webhook", async (req, res) => {
         const result = await calendar.events.insert({
           calendarId: "primary",
           requestBody: {
-            summary: title,
-            // ✅ NO convertir a UTC aquí. Mandamos localISO + timeZone.
+            summary: parsed.title,
             start: { dateTime: localISO, timeZone: tz },
             end: { dateTime: endISO, timeZone: tz },
+
+            // ✅ Alarma 30 minutos antes
+            reminders: {
+              useDefault: false,
+              overrides: [{ method: "popup", minutes: 30 }],
+            },
+
             ...(combinedLoc ? { location: combinedLoc } : {}),
             ...(description ? { description } : {}),
           },
@@ -499,10 +504,11 @@ app.post("/telegram/webhook", async (req, res) => {
 
         const lines = [
           "✅ Evento creado:",
-          title,
+          parsed.title,
           `🕒 ${prettyNY(localISO)} (NY)`,
           combinedLoc ? `📍 ${combinedLoc}` : null,
           description ? `📝 ${description}` : null,
+          "🔔 Recordatorio: 30 min antes",
           prettyLink,
           linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
         ].filter(Boolean);
@@ -543,7 +549,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // top (mostramos índice 1..N fácil)
+    // top
     if (lower === "top") {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -572,7 +578,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // done: 1  (por índice del top)  o done: texto (por búsqueda)
+    // done: ...
     if (lower.startsWith("done:")) {
       if (!owner?.id) owner = await ensureOwner();
 
@@ -582,7 +588,7 @@ app.post("/telegram/webhook", async (req, res) => {
         return;
       }
 
-      // Caso 1: done: número => Nth tarea del top
+      // done: número
       const n = Number(payload);
       if (Number.isFinite(n) && n > 0) {
         const tasks = await prisma.task.findMany({
@@ -609,7 +615,7 @@ app.post("/telegram/webhook", async (req, res) => {
         return;
       }
 
-      // Caso 2: done: texto => match por título (primera que coincida)
+      // done: texto
       const q = payload.toLowerCase();
       const task = await prisma.task.findFirst({
         where: {
@@ -634,7 +640,7 @@ app.post("/telegram/webhook", async (req, res) => {
       return;
     }
 
-    // hoy (placeholder simple)
+    // hoy
     if (lower === "hoy") {
       await telegramSend(chatId, "✅ OK. (Luego conectamos 'hoy' con calendar + tareas)");
       return;
