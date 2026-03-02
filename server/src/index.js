@@ -59,44 +59,96 @@ function stripFields(str) {
     .trim();
 }
 
+function isExplicitDate(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test((s || "").trim());
+}
+
+function isMinutes(s) {
+  return /^\d{1,4}$/.test((s || "").trim());
+}
+
+function isTimeToken(s) {
+  const t = (s || "").trim().toLowerCase();
+  // Acepta: 3pm, 3:30pm, 15:00, 15:00pm (no recomendado pero tolerado)
+  // Importante: no confundir "2026-03-03" con hora.
+  return (
+    /^\d{1,2}:\d{2}\s*(am|pm)?$/.test(t) ||
+    /^\d{1,2}\s*(am|pm)$/.test(t)
+  );
+}
+
 /**
  * Parse "mañana 9pm", "tomorrow 10am", "2026-02-23 15:00", "15:30", "3pm"
- * Devuelve ISO local (YYYY-MM-DDTHH:mm:ss) y tz (America/New_York)
+ * Devuelve ISO local (YYYY-MM-DDTHH:mm:ss±offset) y tz (America/New_York)
  */
 function parseWhenToNYLocal(whenText) {
   const tz = "America/New_York";
-  const w = (whenText || "").toLowerCase().trim();
-  if (!w) throw new Error('Falta fecha/hora. Ej: "mañana 9pm"');
+  const wRaw = (whenText || "").trim();
+  const w = wRaw.toLowerCase();
+
+  if (!wRaw) throw new Error('Falta fecha/hora. Ej: "mañana 9pm"');
 
   // base = "hoy" en NY
   let base = DateTime.now().setZone(tz);
 
-  // fecha explícita YYYY-MM-DD
-  const explicitDate = w.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (!explicitDate) {
+  // detectar fecha explícita YYYY-MM-DD (en cualquier parte)
+  const explicitDateMatch = w.match(/(\d{4})-(\d{2})-(\d{2})/);
+  const hasExplicitDate = Boolean(explicitDateMatch);
+
+  if (!hasExplicitDate) {
     if (w.includes("mañana") || w.includes("manana") || w.includes("tomorrow")) {
       base = base.plus({ days: 1 });
     }
   }
 
-  // hora (3pm, 3:30pm, 15:00)
-  const m = w.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-  if (!m) {
+  // Extraer hora de forma SEGURA:
+  // 1) Preferimos tokens con ":" (15:00 / 3:30pm)
+  // 2) o tokens con am/pm (3pm / 10am)
+  // Evitamos capturar el año "2026" como hora.
+  let timeMatch =
+    w.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i) ||
+    w.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+
+  if (!timeMatch) {
     throw new Error('No pude leer la hora. Ej: "mañana 9pm" o "2026-02-23 15:00"');
   }
 
-  let hh = parseInt(m[1], 10);
-  const mm = parseInt(m[2] || "0", 10);
-  const ampm = (m[3] || "").toLowerCase();
+  let hh;
+  let mm;
+  let ampm = "";
+
+  if (timeMatch.length >= 4 && timeMatch[0].includes(":")) {
+    // formato HH:MM [am/pm]
+    hh = parseInt(timeMatch[1], 10);
+    mm = parseInt(timeMatch[2], 10);
+    ampm = (timeMatch[3] || "").toLowerCase();
+  } else {
+    // formato H am/pm
+    hh = parseInt(timeMatch[1], 10);
+    mm = 0;
+    ampm = (timeMatch[2] || "").toLowerCase();
+  }
+
+  if (Number.isNaN(hh) || Number.isNaN(mm)) {
+    throw new Error("Hora inválida.");
+  }
 
   if (ampm === "pm" && hh < 12) hh += 12;
   if (ampm === "am" && hh === 12) hh = 0;
 
   let dt;
-  if (explicitDate) {
-    const [, Y, M, D] = explicitDate;
+  if (hasExplicitDate) {
+    const [, Y, M, D] = explicitDateMatch;
     dt = DateTime.fromObject(
-      { year: Number(Y), month: Number(M), day: Number(D), hour: hh, minute: mm, second: 0 },
+      {
+        year: Number(Y),
+        month: Number(M),
+        day: Number(D),
+        hour: hh,
+        minute: mm,
+        second: 0,
+        millisecond: 0,
+      },
       { zone: tz }
     );
   } else {
@@ -104,6 +156,9 @@ function parseWhenToNYLocal(whenText) {
   }
 
   if (!dt.isValid) throw new Error("Fecha/hora inválida.");
+
+  // IMPORTANTE:
+  // toISO aquí devuelve con offset (ej -05:00 / -04:00), y además enviamos timeZone al Calendar.
   return { tz, localISO: dt.toISO({ suppressMilliseconds: true }) };
 }
 
@@ -119,6 +174,59 @@ function prettyNY(localISO) {
   const dt = DateTime.fromISO(localISO, { zone: tz });
   // Ej: "Wed – Mar 6 – 5:00 PM"
   return dt.toFormat("ccc '–' LLL d '–' h:mm a");
+}
+
+/**
+ * Interpreta el input del usuario en Telegram para EVENTOS
+ * Soporta:
+ *  - title / mañana 9pm / 60
+ *  - title / 2026-03-03 13:00 / 60
+ *  - title / 13:00 / 2026-03-03 / Miami
+ *  - title / 2026-03-03 / 13:00 / 60 / Miami
+ */
+function parseEventParts(parts) {
+  // parts ya viene sin campos loc/addr/desc/task y split por "/"
+  const title = parts[0] || "Evento Muëcy Ops";
+  const rest = parts.slice(1);
+
+  let minutes = 60;
+  let dateToken = "";
+  let timeToken = "";
+  let leftoverLocation = "";
+
+  for (const tokenRaw of rest) {
+    const token = (tokenRaw || "").trim();
+    if (!token) continue;
+
+    if (!dateToken && isExplicitDate(token)) {
+      dateToken = token;
+      continue;
+    }
+    if (!timeToken && isTimeToken(token)) {
+      timeToken = token;
+      continue;
+    }
+    if (isMinutes(token)) {
+      const n = parseInt(token, 10);
+      // si es algo tipo "2026" no debe tomarse como minutos, pero isMinutes lo acepta.
+      // Entonces: solo aceptamos minutos razonables (1..1440)
+      if (Number.isFinite(n) && n >= 1 && n <= 1440) {
+        minutes = n;
+        continue;
+      }
+    }
+
+    // si no encaja en nada, lo consideramos "posible location" si no usaron loc:
+    if (!leftoverLocation) leftoverLocation = token;
+  }
+
+  // construir whenText
+  let whenText = "";
+  if (dateToken && timeToken) whenText = `${dateToken} ${timeToken}`;
+  else if (timeToken) whenText = timeToken;
+  else if (dateToken) whenText = dateToken; // esto fallará luego con un mensaje claro
+
+  return { title, whenText, minutes, leftoverLocation };
 }
 
 /* =========================
@@ -294,6 +402,7 @@ app.post("/telegram/webhook", async (req, res) => {
           "",
           "Evento:",
           "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / addr: 123 Main St / desc: medir cocina / task: enviar estimate",
+          "• event: revisar Trello / 13:00 / 2026-03-03 / Miami",
         ].join("\n")
       );
       return;
@@ -330,17 +439,31 @@ app.post("/telegram/webhook", async (req, res) => {
         const cleaned = stripFields(rawEvent);
         const parts = cleaned.split("/").map((s) => s.trim()).filter(Boolean);
 
-        const title = parts[0] || "Evento Muëcy Ops";
-        const whenText = parts[1] || "";
-        const minutes = parseInt(parts[2] || "60", 10);
+        if (!parts.length) throw new Error("Formato vacío. Ej: event: Título / mañana 9pm / 60");
 
-        if (!whenText) throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
+        // ✅ Nuevo parser de partes para soportar "13:00 / 2026-03-03 / Miami"
+        const parsed = parseEventParts(parts);
 
-        const { tz, localISO } = parseWhenToNYLocal(whenText);
+        const title = parsed.title;
+        const minutes = parsed.minutes;
+
+        // Si no usaron loc:/addr:, tomamos "Miami" (o lo que venga) como location simple.
+        const fallbackLoc = parsed.leftoverLocation;
+
+        if (!parsed.whenText) {
+          throw new Error('Falta fecha/hora. Ej: event: Visita / mañana 9pm / 60');
+        }
+
+        // Si pasaron solo fecha "2026-03-03" sin hora, aquí damos error claro:
+        if (isExplicitDate(parsed.whenText.trim())) {
+          throw new Error('Te faltó la hora. Ej: "2026-03-03 13:00" o "13:00 / 2026-03-03"');
+        }
+
+        const { tz, localISO } = parseWhenToNYLocal(parsed.whenText);
         const endISO = addMinutesNY(localISO, Number.isFinite(minutes) ? minutes : 60);
 
-        const finalLocation =
-          location && address ? `${location}\n${address}` : location || address || null;
+        const combinedLoc =
+          location && address ? `${location}\n${address}` : location || address || fallbackLoc || null;
 
         const { google, auth } = await getOwnerGoogleAuthOrThrow();
         const calendar = google.calendar({ version: "v3", auth });
@@ -349,9 +472,10 @@ app.post("/telegram/webhook", async (req, res) => {
           calendarId: "primary",
           requestBody: {
             summary: title,
+            // ✅ NO convertir a UTC aquí. Mandamos localISO + timeZone.
             start: { dateTime: localISO, timeZone: tz },
             end: { dateTime: endISO, timeZone: tz },
-            ...(finalLocation ? { location: finalLocation } : {}),
+            ...(combinedLoc ? { location: combinedLoc } : {}),
             ...(description ? { description } : {}),
           },
         });
@@ -377,7 +501,7 @@ app.post("/telegram/webhook", async (req, res) => {
           "✅ Evento creado:",
           title,
           `🕒 ${prettyNY(localISO)} (NY)`,
-          finalLocation ? `📍 ${finalLocation}` : null,
+          combinedLoc ? `📍 ${combinedLoc}` : null,
           description ? `📝 ${description}` : null,
           prettyLink,
           linkedTask ? `🔗 Tarea vinculada: ${linkedTask.title}` : null,
@@ -531,6 +655,7 @@ app.post("/telegram/webhook", async (req, res) => {
         "",
         "Evento:",
         "• event: Visita Eddy / mañana 9pm / 60 / loc: Miami / addr: 123 Main St / desc: medir cocina / task: enviar estimate",
+        "• event: revisar Trello / 13:00 / 2026-03-03 / Miami",
       ].join("\n")
     );
   } catch (e) {
